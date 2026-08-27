@@ -2,6 +2,8 @@
 
 > 面向产品与工程决策 · 2026-08-27 · 基于 ByteTrawl 1.0.3 代码、测试、README 及同类产品官方资料
 
+> 本文档保留现状审计和竞品研究；产品方向的主来源现为 [ByteTrawl 产品战略与完整路线图](product-strategy.md)。
+
 ## 结论先行
 
 ByteTrawl 已经不是一个简单的 Hex Viewer。它目前是一套以 **Artifact（应用、目录、包、文件）为中心的安全静态检查工作台**：能在 macOS 上统一识别和分析 PE、Mach-O、Universal Mach-O 与 ELF，浏览应用目录结构，检查签名、依赖、字符串、节区、重定位、归档与磁盘镜像元数据，并通过 CLI 输出稳定 JSON。

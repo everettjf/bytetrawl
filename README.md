@@ -76,6 +76,10 @@ Exit codes are `0` for a complete report, `1` for a fatal error, `2` when `--fai
 
 Release binaries and Homebrew metadata are hosted in the public [homebrew-tap release](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.0.3), while the source repository remains private.
 
+## Product direction
+
+ByteTrawl is being developed as a **safe static triage, comparison, and release-audit workbench for cross-platform software artifacts**. The canonical [product strategy and roadmap](docs/product-strategy.md) defines its users, principles, architecture, milestones, quality gates, and non-goals. The supporting [current-state and competitor analysis](docs/product-analysis-roadmap.md) and [IPAView convergence plan](docs/ipa-convergence-plan.md) provide the research and platform-specific execution detail.
+
 ## Desktop workflow
 
 - Native macOS menus for opening files, folders, and workspaces, saving workspaces, editing text, and focusing search.
