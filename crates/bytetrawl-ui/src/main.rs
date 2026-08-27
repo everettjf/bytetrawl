@@ -17,8 +17,8 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     Disableable, Root, Sizable, StyledExt, Theme, ThemeMode,
-    button::{Button, ButtonVariants},
-    input::{Input, InputEvent, InputState},
+    button::Button,
+    input::{Copy, Cut, Input, InputEvent, InputState, Paste, Redo, SelectAll, Undo},
 };
 use std::{path::PathBuf, sync::Arc};
 
@@ -32,7 +32,14 @@ use theme::{
 
 actions!(
     bytetrawl,
-    [OpenFile, OpenArtifact, SaveWorkspace, FocusSearch]
+    [
+        OpenFile,
+        OpenArtifact,
+        OpenWorkspace,
+        SaveWorkspace,
+        FocusSearch,
+        Quit
+    ]
 );
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2096,86 +2103,19 @@ impl Render for ByteTrawlApp {
             .text_color(rgb(TEXT))
             .on_action(cx.listener(|this, _: &OpenFile, _, cx| this.choose(false, cx)))
             .on_action(cx.listener(|this, _: &OpenArtifact, _, cx| this.choose(true, cx)))
+            .on_action(cx.listener(|this, _: &OpenWorkspace, _, cx| this.open_workspace(cx)))
             .on_action(cx.listener(|this, _: &SaveWorkspace, _, cx| this.save_workspace(cx)))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
                 this.search_input.focus_handle(cx).focus(window)
             }))
             .child(
                 div()
-                    .h(px(78.))
+                    .h(px(36.))
                     .flex()
                     .flex_col()
                     .bg(rgb(PANEL))
                     .border_b_1()
                     .border_color(rgb(BORDER))
-                    .child(
-                        div()
-                            .h(px(42.))
-                            .flex()
-                            .items_center()
-                            .px_3()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .w(px(92.))
-                                    .font_semibold()
-                                    .text_base()
-                                    .child("ByteTrawl"),
-                            )
-                            .child(
-                                Button::new("open-folder")
-                                    .label("Open Artifact")
-                                    .xsmall()
-                                    .compact()
-                                    .primary()
-                                    .on_click(cx.listener(|this, _, _, cx| this.choose(true, cx))),
-                            )
-                            .child(
-                                Button::new("open-file")
-                                    .label("Open File")
-                                    .xsmall()
-                                    .compact()
-                                    .on_click(cx.listener(|this, _, _, cx| this.choose(false, cx))),
-                            )
-                            .child(
-                                Button::new("open-workspace")
-                                    .label("Open Workspace")
-                                    .xsmall()
-                                    .compact()
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.open_workspace(cx)),
-                                    ),
-                            )
-                            .child(
-                                Button::new("save-workspace")
-                                    .label("Save")
-                                    .xsmall()
-                                    .compact()
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.save_workspace(cx)),
-                                    ),
-                            )
-                            .child(div().flex_1())
-                            .when(self.loading, |toolbar| {
-                                toolbar
-                                    .child(
-                                        div()
-                                            .mr_1()
-                                            .text_xs()
-                                            .text_color(rgb(ACCENT))
-                                            .child("● Analyzing"),
-                                    )
-                                    .child(
-                                        Button::new("cancel-task")
-                                            .label("Cancel")
-                                            .xsmall()
-                                            .compact()
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.cancel_current_task(cx)
-                                            })),
-                                    )
-                            }),
-                    )
                     .child(
                         div()
                             .h(px(36.))
@@ -2252,7 +2192,26 @@ impl Render for ByteTrawlApp {
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.copy_hex_chunk(cx)),
                                     ),
-                            ),
+                            )
+                            .when(self.loading, |toolbar| {
+                                toolbar
+                                    .child(
+                                        div()
+                                            .ml_1()
+                                            .text_xs()
+                                            .text_color(rgb(ACCENT))
+                                            .child("● Analyzing"),
+                                    )
+                                    .child(
+                                        Button::new("cancel-task")
+                                            .label("Cancel")
+                                            .xsmall()
+                                            .compact()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.cancel_current_task(cx)
+                                            })),
+                                    )
+                            }),
                     ),
             )
             .child(
@@ -2621,15 +2580,58 @@ fn configure_component_theme(cx: &mut App) {
     theme.radius_lg = px(3.2);
 }
 
+fn quit(_: &Quit, cx: &mut App) {
+    cx.quit();
+}
+
 fn main() {
     Application::new().run(|cx| {
         gpui_component::init(cx);
         configure_component_theme(cx);
+        cx.activate(true);
+        cx.on_action(quit);
         cx.bind_keys([
             KeyBinding::new("cmd-o", OpenFile, None),
             KeyBinding::new("cmd-shift-o", OpenArtifact, None),
+            KeyBinding::new("cmd-alt-o", OpenWorkspace, None),
             KeyBinding::new("cmd-s", SaveWorkspace, None),
             KeyBinding::new("cmd-f", FocusSearch, None),
+        ]);
+        cx.set_menus(vec![
+            Menu {
+                name: "ByteTrawl".into(),
+                items: vec![
+                    MenuItem::os_submenu("Services", SystemMenuType::Services),
+                    MenuItem::separator(),
+                    MenuItem::action("Quit ByteTrawl", Quit),
+                ],
+            },
+            Menu {
+                name: "File".into(),
+                items: vec![
+                    MenuItem::action("Open File…", OpenFile),
+                    MenuItem::action("Open Folder…", OpenArtifact),
+                    MenuItem::action("Open Workspace…", OpenWorkspace),
+                    MenuItem::separator(),
+                    MenuItem::action("Save Workspace…", SaveWorkspace),
+                ],
+            },
+            Menu {
+                name: "Edit".into(),
+                items: vec![
+                    MenuItem::os_action("Undo", Undo, OsAction::Undo),
+                    MenuItem::os_action("Redo", Redo, OsAction::Redo),
+                    MenuItem::separator(),
+                    MenuItem::os_action("Cut", Cut, OsAction::Cut),
+                    MenuItem::os_action("Copy", Copy, OsAction::Copy),
+                    MenuItem::os_action("Paste", Paste, OsAction::Paste),
+                    MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+                ],
+            },
+            Menu {
+                name: "View".into(),
+                items: vec![MenuItem::action("Focus Search", FocusSearch)],
+            },
         ]);
         cx.spawn(async move |cx| {
             cx.open_window(
