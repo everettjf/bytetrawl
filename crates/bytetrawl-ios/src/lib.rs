@@ -1237,4 +1237,82 @@ mod tests {
         );
         assert_eq!(report.architectures, ["arm64"]);
     }
+
+    #[test]
+    fn validates_twenty_owned_ipa_compatibility_variants() {
+        let temporary = tempfile::tempdir().expect("create IPA compatibility matrix");
+        for index in 0..20 {
+            let ipa = temporary
+                .path()
+                .join(format!("OwnedFixture-{index:02}.ipa"));
+            let file = std::fs::File::create(&ipa).expect("create matrix IPA");
+            let mut writer = zip::ZipWriter::new(file);
+            let app_name = format!("Fixture{index:02}");
+            let mut fields = format!(
+                "<key>CFBundleDisplayName</key><string>{app_name}</string>\
+                 <key>CFBundleIdentifier</key><string>app.xnu.fixture{index:02}</string>"
+            );
+            if index % 4 != 0 {
+                fields.push_str(
+                    "<key>CFBundleShortVersionString</key><string>1.0</string>\
+                     <key>CFBundleVersion</key><string>1</string>",
+                );
+            }
+            if index % 5 != 0 {
+                fields.push_str(&format!(
+                    "<key>CFBundleExecutable</key><string>{app_name}</string>"
+                ));
+            }
+            if index % 3 == 0 {
+                fields.push_str("<key>NSCameraUsageDescription</key><string>Camera</string>");
+            }
+            add_file(
+                &mut writer,
+                &format!("Payload/{app_name}.app/Info.plist"),
+                &plist(&fields),
+            );
+            if index % 5 != 0 {
+                let executable = if index % 7 == 0 {
+                    fat_arm64_x86_64()
+                } else {
+                    thin_macho(0x0100_000c)
+                };
+                add_file(
+                    &mut writer,
+                    &format!("Payload/{app_name}.app/{app_name}"),
+                    &executable,
+                );
+            }
+            if index % 2 == 0 {
+                add_file(
+                    &mut writer,
+                    &format!("Payload/{app_name}.app/PrivacyInfo.xcprivacy"),
+                    &plist("<key>NSPrivacyTracking</key><false/>"),
+                );
+            }
+            if index % 6 == 0 {
+                add_file(
+                    &mut writer,
+                    &format!("Payload/{app_name}.app/PlugIns/Share.appex/Info.plist"),
+                    &plist(&format!(
+                        "<key>CFBundleIdentifier</key><string>app.xnu.fixture{index:02}.share</string>"
+                    )),
+                );
+            }
+            writer.finish().expect("finish matrix IPA");
+
+            let artifact =
+                open_artifact(&ipa, &CancellationToken::default()).expect("open matrix IPA");
+            let report =
+                audit_ipa(&artifact, &CancellationToken::default()).expect("audit matrix IPA");
+            assert_ipaview_contract(&report);
+            let first = serde_json::to_vec(&ipa_view_compatible(&report))
+                .expect("serialize matrix contract");
+            let repeated = audit_ipa(&artifact, &CancellationToken::default())
+                .expect("repeat matrix IPA audit");
+            let second = serde_json::to_vec(&ipa_view_compatible(&repeated))
+                .expect("serialize repeated matrix contract");
+            assert_eq!(first, second, "variant {index} is not deterministic");
+        }
+    }
 }
