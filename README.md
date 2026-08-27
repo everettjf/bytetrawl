@@ -31,6 +31,10 @@ bytetrawl-cli --version
 
 The 1.0.3 app bundle is Developer ID signed, Apple-notarized, and ships with a stapled notarization ticket so Gatekeeper can verify it without contacting Apple.
 
+### Release requirements
+
+Every distributed macOS build must pass the complete release trust chain: Developer ID Application signing, Apple notarization, ticket stapling, strict code-signature verification, stapler validation, and Gatekeeper assessment. Release archives must be produced with `scripts/release-macos.sh`; the unsigned or ad-hoc output of the lower-level build script must never be published. Apple credentials are supplied through environment variables and must not be printed, embedded, or committed.
+
 ## Requirements
 
 - Apple silicon Mac (`arm64`)
