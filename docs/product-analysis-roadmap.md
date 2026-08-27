@@ -250,6 +250,11 @@ ByteTrawl 已经不是一个简单的 Hex Viewer。它目前是一套以 **Artif
 - resources.arsc 摘要、DEX 数量与 class/method/reference counts。
 - APK signing schemes 概览；代码深析交给 jadx。
 
+**iOS IPA 收敛主线**
+
+- IPAView 的完整功能等价、迁移架构、共享测试、分阶段验收与停用门槛见 [ByteTrawl × IPAView 功能收敛规划](ipa-convergence-plan.md)。
+- 在达到规划中的兼容字段、规则、JSON、UI、安全样本和真实 IPA 对照门槛前，IPAView 保持独立维护。
+
 **Windows 主线**
 
 - PE resources/version info/manifest、TLS callbacks、exception/unwind、debug directory、load config、CLR/.NET metadata。
