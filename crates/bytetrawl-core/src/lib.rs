@@ -45,6 +45,39 @@ pub enum FileFormat {
     UnknownBinary,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ArtifactSource {
+    Filesystem {
+        path: PathBuf,
+    },
+    ArchiveMember {
+        container: PathBuf,
+        member_path: PathBuf,
+        entry_index: usize,
+        compressed_size: u64,
+        uncompressed_size: u64,
+        crc32: u32,
+        is_directory: bool,
+    },
+}
+
+impl ArtifactSource {
+    pub fn is_file(&self) -> bool {
+        match self {
+            Self::Filesystem { path } => path.is_file(),
+            Self::ArchiveMember { is_directory, .. } => !is_directory,
+        }
+    }
+
+    pub fn is_dir(&self) -> bool {
+        match self {
+            Self::Filesystem { path } => path.is_dir(),
+            Self::ArchiveMember { is_directory, .. } => *is_directory,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BinaryPlatform {
@@ -60,6 +93,8 @@ pub struct ArtifactNode {
     pub id: Uuid,
     pub name: String,
     pub path: PathBuf,
+    #[serde(default)]
+    pub source: Option<ArtifactSource>,
     pub kind: ArtifactKind,
     pub format: Option<FileFormat>,
     pub size: u64,
@@ -73,6 +108,7 @@ impl ArtifactNode {
         Self {
             id: Uuid::new_v4(),
             name: name.into(),
+            source: Some(ArtifactSource::Filesystem { path: path.clone() }),
             path,
             kind,
             format: None,
@@ -93,8 +129,21 @@ impl ArtifactNode {
         self.collect_files(&mut nodes);
         nodes.into_iter()
     }
+    pub fn is_file(&self) -> bool {
+        match self.source.as_ref() {
+            Some(ArtifactSource::ArchiveMember { is_directory, .. }) => !is_directory,
+            Some(ArtifactSource::Filesystem { path }) => !path.is_dir(),
+            None => !self.path.is_dir(),
+        }
+    }
+    pub fn is_dir(&self) -> bool {
+        self.source
+            .as_ref()
+            .map(ArtifactSource::is_dir)
+            .unwrap_or_else(|| self.path.is_dir())
+    }
     fn collect_files<'a>(&'a self, out: &mut Vec<&'a ArtifactNode>) {
-        if !self.path.is_dir() {
+        if self.is_file() {
             out.push(self);
         }
         for child in &self.children {
@@ -129,6 +178,28 @@ pub struct Evidence {
     pub label: String,
     pub value: String,
     pub offset: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator: Option<EvidenceLocator>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EvidenceLocator {
+    File {
+        path: PathBuf,
+        offset: Option<u64>,
+        length: Option<u64>,
+    },
+    ArchiveMember {
+        container: PathBuf,
+        member_path: PathBuf,
+        offset: Option<u64>,
+        length: Option<u64>,
+    },
+    StructuredField {
+        source: PathBuf,
+        field: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -396,5 +467,60 @@ mod tests {
         assert_eq!(loaded.bookmarks, workspace.bookmarks);
         assert_eq!(loaded.analysis_results.len(), 1);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn artifact_source_and_evidence_locator_round_trip() {
+        let mut node = ArtifactNode::new(
+            "Info.plist",
+            PathBuf::from("sample.ipa!/Payload/Sample.app/Info.plist"),
+            ArtifactKind::Metadata,
+        );
+        node.source = Some(ArtifactSource::ArchiveMember {
+            container: PathBuf::from("sample.ipa"),
+            member_path: PathBuf::from("Payload/Sample.app/Info.plist"),
+            entry_index: 7,
+            compressed_size: 128,
+            uncompressed_size: 256,
+            crc32: 0x1234_abcd,
+            is_directory: false,
+        });
+        let encoded = serde_json::to_vec(&node).expect("serialize archive member node");
+        let decoded: ArtifactNode =
+            serde_json::from_slice(&encoded).expect("deserialize archive member node");
+        assert_eq!(decoded.source, node.source);
+        assert!(decoded.is_file());
+
+        let evidence = Evidence {
+            label: "Bundle identifier".into(),
+            value: "com.example.sample".into(),
+            offset: None,
+            locator: Some(EvidenceLocator::StructuredField {
+                source: node.path.clone(),
+                field: "CFBundleIdentifier".into(),
+            }),
+        };
+        let encoded = serde_json::to_vec(&evidence).expect("serialize evidence locator");
+        let decoded: Evidence =
+            serde_json::from_slice(&encoded).expect("deserialize evidence locator");
+        assert_eq!(decoded.locator, evidence.locator);
+    }
+
+    #[test]
+    fn artifact_nodes_from_older_snapshots_default_to_filesystem_compatibility() {
+        let node = ArtifactNode::new(
+            "legacy.bin",
+            PathBuf::from("/tmp/legacy.bin"),
+            ArtifactKind::Unknown,
+        );
+        let mut value = serde_json::to_value(node).expect("serialize legacy node fixture");
+        value
+            .as_object_mut()
+            .expect("artifact node is a JSON object")
+            .remove("source");
+        let decoded: ArtifactNode =
+            serde_json::from_value(value).expect("deserialize legacy artifact node");
+        assert!(decoded.source.is_none());
+        assert_eq!(decoded.path, PathBuf::from("/tmp/legacy.bin"));
     }
 }

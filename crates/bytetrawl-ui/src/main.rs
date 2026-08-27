@@ -4,9 +4,9 @@ use bytetrawl::file_search::{FileSearchMode, parse_search_bytes};
 use bytetrawl_analysis::{
     AnalysisCache, CancellationToken, ExtractedString, HashOptions, HexReader, SearchHit,
     analyze_node, annotate_string_locations, apply_signature_analysis, build_dependency_graph,
-    enrich_analysis_entropy, extract_strings_file_cancellable, global_search_cached, hash_file,
+    enrich_analysis_entropy, extract_strings_node_cancellable, global_search_cached, hash_file,
     inspect_metadata, inspect_signature_cancellable, open_artifact, resolve_dependencies,
-    search_file,
+    search_node,
 };
 use bytetrawl_core::{
     ArtifactKind, ArtifactNode, BinaryAnalysis, BinaryPlatform, DependencyGraph, FileSummary,
@@ -380,7 +380,7 @@ impl ByteTrawlApp {
                             .artifact
                             .as_ref()
                             .and_then(|artifact| artifact.find(id))
-                            .is_some_and(|node| node.path.is_file());
+                            .is_some_and(ArtifactNode::is_file);
                         if should_analyze {
                             this.select(id, cx);
                         } else if let Some(tab) = this.restore_tab.take()
@@ -425,7 +425,7 @@ impl ByteTrawlApp {
             cx.notify();
             return;
         };
-        if node.path.is_dir() {
+        if node.is_dir() {
             self.status = "Container selected".into();
             cx.notify();
             return;
@@ -609,11 +609,7 @@ impl ByteTrawlApp {
         .detach();
     }
     fn load_strings(&mut self, cx: &mut Context<Self>) {
-        let Some(node) = self
-            .selected_node()
-            .filter(|node| node.path.is_file())
-            .cloned()
-        else {
+        let Some(node) = self.selected_node().filter(|node| node.is_file()).cloned() else {
             return;
         };
         self.cancellation.cancel();
@@ -629,7 +625,7 @@ impl ByteTrawlApp {
             let result = cx
                 .background_spawn(async move {
                     let mut strings =
-                        extract_strings_file_cancellable(&node.path, 2, 100_000, &cancellation)?;
+                        extract_strings_node_cancellable(&node, 2, 100_000, &cancellation)?;
                     if let Some(analysis) = analysis.as_deref() {
                         if analysis.slice_analyses.is_empty() {
                             annotate_string_locations(&mut strings, analysis);
@@ -669,7 +665,7 @@ impl ByteTrawlApp {
         let Some(node) = self.selected_node().cloned() else {
             return;
         };
-        if !node.path.is_file() || self.query.is_empty() {
+        if !node.is_file() || self.query.is_empty() {
             return;
         }
         self.cancellation.cancel();
@@ -693,9 +689,7 @@ impl ByteTrawlApp {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(
-                    async move { search_file(&node.path, &needle, start, &cancellation) },
-                )
+                .background_spawn(async move { search_node(&node, &needle, start, &cancellation) })
                 .await;
             this.update(cx, |this, cx| {
                 if this.task_generation != generation {
@@ -800,7 +794,7 @@ impl ByteTrawlApp {
                 )
             })
             .unwrap_or((self.hex_offset, 4096));
-        let bytes = match HexReader::open(&node.path)
+        let bytes = match HexReader::open_node(node)
             .and_then(|mut reader| reader.read_chunk(offset, length))
         {
             Ok(bytes) => bytes,
@@ -825,11 +819,7 @@ impl ByteTrawlApp {
         cx.notify();
     }
     fn compute_all_hashes(&mut self, cx: &mut Context<Self>) {
-        let Some(node) = self
-            .selected_node()
-            .filter(|node| node.path.is_file())
-            .cloned()
-        else {
+        let Some(node) = self.selected_node().filter(|node| node.is_file()).cloned() else {
             return;
         };
         self.cancellation.cancel();
@@ -988,7 +978,7 @@ impl ByteTrawlApp {
                     tabs.push(InspectorTab::Findings);
                 }
             }
-        } else if self.selected_node().is_some_and(|n| n.path.is_file()) {
+        } else if self.selected_node().is_some_and(ArtifactNode::is_file) {
             tabs.push(InspectorTab::Hex);
             if !self.metadata.is_empty() {
                 tabs.push(InspectorTab::Metadata);
@@ -1255,7 +1245,7 @@ impl ByteTrawlApp {
                     .child(
                         Button::new("compute-all-hashes")
                             .label("Compute hashes + entropy")
-                            .disabled(!self.selected_node().is_some_and(|node| node.path.is_file()))
+                            .disabled(!self.selected_node().is_some_and(ArtifactNode::is_file))
                             .on_click(cx.listener(|this, _, _, cx| this.compute_all_hashes(cx))),
                     )
                     .child(
@@ -1996,7 +1986,7 @@ impl ByteTrawlApp {
             .summary
             .as_ref()
             .is_none_or(|summary| summary.sha256.is_none())
-            && node.path.is_file()
+            && node.is_file()
         {
             values.push((
                 "SHA-256 / entropy".into(),
@@ -2107,7 +2097,7 @@ impl ByteTrawlApp {
     }
     fn render_hex(&self, node: &ArtifactNode, cx: &mut Context<Self>) -> AnyElement {
         let offset = self.hex_offset.saturating_sub(self.hex_offset % 16);
-        let preview = match HexReader::open(&node.path)
+        let preview = match HexReader::open_node(node)
             .and_then(|mut reader| reader.read_chunk(offset, 4096))
         {
             Ok(preview) => preview,

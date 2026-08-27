@@ -26,6 +26,7 @@ const MAX_FILES: usize = 200_000;
 const MAX_DEPTH: usize = 64;
 const HEADER_BYTES: usize = 64 * 1024;
 const MAX_STRUCTURED_METADATA_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_ARCHIVE_MEMBER_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Clone, Default)]
 pub struct CancellationToken(Arc<AtomicBool>);
@@ -46,6 +47,133 @@ impl CancellationToken {
     }
 }
 
+pub struct ArtifactReader {
+    source: ArtifactSource,
+    length: u64,
+}
+
+impl ArtifactReader {
+    pub fn open(node: &ArtifactNode) -> Result<Self> {
+        let source = node
+            .source
+            .clone()
+            .unwrap_or_else(|| ArtifactSource::Filesystem {
+                path: node.path.clone(),
+            });
+        let length = match &source {
+            ArtifactSource::Filesystem { path } => std::fs::metadata(path)
+                .map_err(|source| ByteTrawlError::Io {
+                    path: path.clone(),
+                    source,
+                })?
+                .len(),
+            ArtifactSource::ArchiveMember {
+                uncompressed_size, ..
+            } => *uncompressed_size,
+        };
+        Ok(Self { source, length })
+    }
+
+    pub fn len(&self) -> u64 {
+        self.length
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
+    pub fn read_prefix(&self, limit: usize) -> Result<Vec<u8>> {
+        self.read_range(0, limit)
+    }
+
+    pub fn read_all(&self, maximum_bytes: u64) -> Result<Vec<u8>> {
+        if self.length > maximum_bytes {
+            return Err(ByteTrawlError::Limit(format!(
+                "artifact source exceeds {maximum_bytes} bytes"
+            )));
+        }
+        self.read_range(0, self.length as usize)
+    }
+
+    pub fn read_range(&self, offset: u64, length: usize) -> Result<Vec<u8>> {
+        let available = self.length.saturating_sub(offset);
+        let requested = length.min(available.min(usize::MAX as u64) as usize);
+        match &self.source {
+            ArtifactSource::Filesystem { path } => {
+                let mut file = File::open(path).map_err(|source| ByteTrawlError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+                file.seek(SeekFrom::Start(offset))
+                    .map_err(|source| ByteTrawlError::Io {
+                        path: path.clone(),
+                        source,
+                    })?;
+                let mut bytes = vec![0; requested];
+                file.read_exact(&mut bytes)
+                    .map_err(|source| ByteTrawlError::Io {
+                        path: path.clone(),
+                        source,
+                    })?;
+                Ok(bytes)
+            }
+            ArtifactSource::ArchiveMember {
+                container,
+                member_path,
+                entry_index,
+                is_directory,
+                ..
+            } => {
+                if *is_directory {
+                    return Err(ByteTrawlError::Malformed(
+                        "cannot read bytes from an archive directory".into(),
+                    ));
+                }
+                let file = File::open(container).map_err(|source| ByteTrawlError::Io {
+                    path: container.clone(),
+                    source,
+                })?;
+                let mut archive = zip::ZipArchive::new(file)
+                    .map_err(|error| ByteTrawlError::Malformed(format!("ZIP: {error}")))?;
+                let mut entry = archive.by_index(*entry_index).map_err(|error| {
+                    ByteTrawlError::Malformed(format!("ZIP entry {entry_index}: {error}"))
+                })?;
+                let enclosed = entry.enclosed_name().ok_or_else(|| {
+                    ByteTrawlError::Malformed("archive member path is unsafe".into())
+                })?;
+                if enclosed != *member_path {
+                    return Err(ByteTrawlError::Malformed(
+                        "archive member index no longer matches its path".into(),
+                    ));
+                }
+                if offset > 0 {
+                    std::io::copy(&mut entry.by_ref().take(offset), &mut std::io::sink()).map_err(
+                        |source| ByteTrawlError::Io {
+                            path: container.clone(),
+                            source,
+                        },
+                    )?;
+                }
+                let mut bytes = Vec::with_capacity(requested);
+                entry
+                    .take(requested as u64)
+                    .read_to_end(&mut bytes)
+                    .map_err(|source| ByteTrawlError::Io {
+                        path: container.clone(),
+                        source,
+                    })?;
+                if bytes.len() != requested {
+                    return Err(ByteTrawlError::Malformed(format!(
+                        "archive member ended after {} of {requested} requested bytes",
+                        bytes.len()
+                    )));
+                }
+                Ok(bytes)
+            }
+        }
+    }
+}
+
 pub fn open_artifact(path: &Path, cancel: &CancellationToken) -> Result<ArtifactNode> {
     let metadata = std::fs::symlink_metadata(path).map_err(|source| ByteTrawlError::Io {
         path: path.into(),
@@ -54,7 +182,198 @@ pub fn open_artifact(path: &Path, cancel: &CancellationToken) -> Result<Artifact
     if metadata.is_dir() {
         discover_directory(path, cancel)
     } else {
-        build_file_node(path)
+        let mut root = build_file_node(path)?;
+        if root.format == Some(FileFormat::Zip) {
+            populate_zip_members(&mut root, cancel)?;
+        }
+        Ok(root)
+    }
+}
+
+fn populate_zip_members(root: &mut ArtifactNode, cancel: &CancellationToken) -> Result<()> {
+    let file = File::open(&root.path).map_err(|source| ByteTrawlError::Io {
+        path: root.path.clone(),
+        source,
+    })?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|error| ByteTrawlError::Malformed(format!("ZIP: {error}")))?;
+    if archive.len() > MAX_FILES {
+        return Err(ByteTrawlError::Limit(format!(
+            "ZIP contains more than {MAX_FILES} entries"
+        )));
+    }
+
+    let mut ipa_info_plist_found = false;
+    for entry_index in 0..archive.len() {
+        cancel.check()?;
+        let entry = archive.by_index(entry_index).map_err(|error| {
+            ByteTrawlError::Malformed(format!("ZIP entry {entry_index}: {error}"))
+        })?;
+        let Some(member_path) = entry.enclosed_name() else {
+            continue;
+        };
+        if member_path.components().count().saturating_sub(1) > MAX_DEPTH {
+            return Err(ByteTrawlError::Limit(format!(
+                "archive member depth exceeds {MAX_DEPTH}"
+            )));
+        }
+        if entry.size() > MAX_ARCHIVE_MEMBER_BYTES {
+            return Err(ByteTrawlError::Limit(format!(
+                "archive member {} exceeds {MAX_ARCHIVE_MEMBER_BYTES} bytes",
+                member_path.display()
+            )));
+        }
+        let source = ArtifactSource::ArchiveMember {
+            container: root.path.clone(),
+            member_path: member_path.clone(),
+            entry_index,
+            compressed_size: entry.compressed_size(),
+            uncompressed_size: entry.size(),
+            crc32: entry.crc32(),
+            is_directory: entry.is_dir(),
+        };
+        if is_ipa_info_plist(&member_path) {
+            ipa_info_plist_found = true;
+        }
+        insert_archive_member(root, &member_path, source)?;
+    }
+    if ipa_info_plist_found {
+        root.kind = ArtifactKind::Package;
+        root.properties
+            .insert("Package Format".into(), "Apple iOS IPA".into());
+        root.properties.insert(
+            "Inspection Mode".into(),
+            "Virtual archive members; ByteTrawl did not extract this IPA.".into(),
+        );
+    }
+    root.properties
+        .insert("Archive Members".into(), archive.len().to_string());
+    Ok(())
+}
+
+fn is_ipa_info_plist(path: &Path) -> bool {
+    let parts = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>();
+    parts.len() == 3
+        && parts[0] == "Payload"
+        && parts[1].to_ascii_lowercase().ends_with(".app")
+        && parts[2] == "Info.plist"
+}
+
+fn insert_archive_member(
+    root: &mut ArtifactNode,
+    member_path: &Path,
+    source: ArtifactSource,
+) -> Result<()> {
+    let components = member_path.components().collect::<Vec<_>>();
+    if components.is_empty() {
+        return Ok(());
+    }
+    let container_path = root.path.clone();
+    let mut current = root;
+    for (component_index, component) in components.iter().enumerate() {
+        let name = component.as_os_str().to_string_lossy().into_owned();
+        let is_last = component_index + 1 == components.len();
+        if let Some(existing_index) = current.children.iter().position(|node| node.name == name) {
+            current = &mut current.children[existing_index];
+            if is_last {
+                current.source = Some(source.clone());
+                apply_archive_source_metadata(current, &source);
+            }
+            continue;
+        }
+        let partial_path =
+            components[..=component_index]
+                .iter()
+                .fold(PathBuf::new(), |mut path, component| {
+                    path.push(component.as_os_str());
+                    path
+                });
+        let display_path = PathBuf::from(format!(
+            "{}!/{}",
+            container_path.display(),
+            partial_path.display()
+        ));
+        let mut node = if is_last {
+            let kind = archive_member_kind(&name, source.is_dir());
+            let mut node = ArtifactNode::new(name, display_path, kind);
+            node.source = Some(source.clone());
+            apply_archive_source_metadata(&mut node, &source);
+            node
+        } else {
+            let kind = archive_member_kind(&name, true);
+            let mut node = ArtifactNode::new(name, display_path, kind);
+            node.source = Some(ArtifactSource::ArchiveMember {
+                container: container_path.clone(),
+                member_path: partial_path,
+                entry_index: 0,
+                compressed_size: 0,
+                uncompressed_size: 0,
+                crc32: 0,
+                is_directory: true,
+            });
+            node
+        };
+        if node.is_dir() {
+            node.properties
+                .insert("Archive Directory".into(), "true".into());
+        }
+        current.children.push(node);
+        let inserted_index = current.children.len().saturating_sub(1);
+        current = &mut current.children[inserted_index];
+    }
+    Ok(())
+}
+
+fn apply_archive_source_metadata(node: &mut ArtifactNode, source: &ArtifactSource) {
+    if let ArtifactSource::ArchiveMember {
+        member_path,
+        compressed_size,
+        uncompressed_size,
+        crc32,
+        ..
+    } = source
+    {
+        node.size = *uncompressed_size;
+        node.properties
+            .insert("Archive Member".into(), member_path.display().to_string());
+        node.properties
+            .insert("Compressed Size".into(), compressed_size.to_string());
+        node.properties
+            .insert("Uncompressed Size".into(), uncompressed_size.to_string());
+        node.properties
+            .insert("CRC32".into(), format!("{crc32:08x}"));
+    }
+}
+
+fn archive_member_kind(name: &str, is_directory: bool) -> ArtifactKind {
+    if is_directory {
+        let extension = Path::new(name)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        return match extension.as_str() {
+            "app" => ArtifactKind::Application,
+            "framework" => ArtifactKind::Framework,
+            "appex" | "plugin" => ArtifactKind::Plugin,
+            "bundle" => ArtifactKind::Bundle,
+            _ => ArtifactKind::Directory,
+        };
+    }
+    let extension = Path::new(name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "plist" | "json" | "xml" | "xcprivacy" | "mobileprovision" => ArtifactKind::Metadata,
+        "dylib" | "so" => ArtifactKind::DynamicLibrary,
+        "a" | "lib" => ArtifactKind::StaticLibrary,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "txt" | "strings" => ArtifactKind::Resource,
+        _ => ArtifactKind::Unknown,
     }
 }
 
@@ -121,12 +440,11 @@ fn logicalize_artifact_tree(root: &mut ArtifactNode) {
     ];
 
     fn collect(node: &ArtifactNode, buckets: &mut HashMap<ArtifactKind, Vec<ArtifactNode>>) {
-        if node.path.is_dir() && matches!(node.kind, ArtifactKind::Framework | ArtifactKind::Plugin)
-        {
+        if node.is_dir() && matches!(node.kind, ArtifactKind::Framework | ArtifactKind::Plugin) {
             buckets.entry(node.kind).or_default().push(node.clone());
             return;
         }
-        if node.path.is_file() {
+        if node.is_file() {
             buckets.entry(node.kind).or_default().push(node.clone());
             return;
         }
@@ -437,7 +755,12 @@ pub fn resolve_dependencies(analysis: &mut BinaryAnalysis, artifact: &ArtifactNo
             category: FindingCategory::Dependency,
             title: format!("Missing dependency: {}", dependency.name),
             description: "A path-based dependency could not be resolved inside the imported artifact or as a known system dependency.".into(),
-            evidence: vec![Evidence { label: "Library".into(), value: dependency.name.clone(), offset: None }],
+            evidence: vec![Evidence {
+                label: "Library".into(),
+                value: dependency.name.clone(),
+                offset: None,
+                locator: None,
+            }],
         });
     }
 }
@@ -494,21 +817,37 @@ pub fn build_dependency_graph(
 }
 
 pub fn analyze_node(node: &ArtifactNode) -> Result<Option<BinaryAnalysis>> {
+    let detected_format = if node.format.is_some() {
+        node.format
+    } else {
+        Some(detect_format(
+            &ArtifactReader::open(node)?.read_prefix(HEADER_BYTES)?,
+        ))
+    };
     if !matches!(
-        node.format,
+        detected_format,
         Some(FileFormat::Pe | FileFormat::MachO | FileFormat::FatMachO | FileFormat::Elf)
     ) {
         return Ok(None);
     }
-    let file = File::open(&node.path).map_err(|source| ByteTrawlError::Io {
-        path: node.path.clone(),
-        source,
-    })?;
-    let map = unsafe { MmapOptions::new().map(&file) }.map_err(|source| ByteTrawlError::Io {
-        path: node.path.clone(),
-        source,
-    })?;
-    let mut analysis = analyze_binary(&map)?;
+    let mut analysis = match node.source.as_ref() {
+        Some(ArtifactSource::ArchiveMember { .. }) => {
+            let bytes = ArtifactReader::open(node)?.read_all(bytetrawl_format::MAX_PARSE_BYTES)?;
+            analyze_binary(&bytes)?
+        }
+        _ => {
+            let file = File::open(&node.path).map_err(|source| ByteTrawlError::Io {
+                path: node.path.clone(),
+                source,
+            })?;
+            let map =
+                unsafe { MmapOptions::new().map(&file) }.map_err(|source| ByteTrawlError::Io {
+                    path: node.path.clone(),
+                    source,
+                })?;
+            analyze_binary(&map)?
+        }
+    };
     for slice in &mut analysis.slice_analyses {
         add_findings(slice);
     }
@@ -518,6 +857,9 @@ pub fn analyze_node(node: &ArtifactNode) -> Result<Option<BinaryAnalysis>> {
 
 pub fn inspect_metadata(node: &ArtifactNode) -> Result<indexmap::IndexMap<String, String>> {
     let mut metadata = indexmap::IndexMap::new();
+    if matches!(node.source, Some(ArtifactSource::ArchiveMember { .. })) {
+        return inspect_archive_member_metadata(node);
+    }
     match node.format {
         Some(FileFormat::Plist) => {
             ensure_structured_metadata_size(node)?;
@@ -600,6 +942,77 @@ pub fn inspect_metadata(node: &ArtifactNode) -> Result<indexmap::IndexMap<String
     Ok(metadata)
 }
 
+fn inspect_archive_member_metadata(
+    node: &ArtifactNode,
+) -> Result<indexmap::IndexMap<String, String>> {
+    ensure_structured_metadata_size(node)?;
+    let reader = ArtifactReader::open(node)?;
+    let prefix = reader.read_prefix(HEADER_BYTES)?;
+    let format = node.format.unwrap_or_else(|| detect_format(&prefix));
+    let mut metadata = indexmap::IndexMap::new();
+    match format {
+        FileFormat::Plist => {
+            let bytes = reader.read_all(MAX_STRUCTURED_METADATA_BYTES)?;
+            let value = plist::Value::from_reader(std::io::Cursor::new(bytes))
+                .map_err(|error| ByteTrawlError::Malformed(format!("plist: {error}")))?;
+            flatten_plist("", &value, &mut metadata, 0);
+        }
+        FileFormat::Json => {
+            let bytes = reader.read_all(MAX_STRUCTURED_METADATA_BYTES)?;
+            let value: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|error| ByteTrawlError::Malformed(format!("JSON: {error}")))?;
+            flatten_json("", &value, &mut metadata, 0);
+        }
+        FileFormat::Xml => {
+            let bytes = reader.read_all(MAX_STRUCTURED_METADATA_BYTES)?;
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|error| ByteTrawlError::Malformed(format!("XML UTF-8: {error}")))?;
+            inspect_xml_text(text, &mut metadata)?;
+        }
+        FileFormat::Sqlite if prefix.len() >= 100 => {
+            inspect_sqlite_header(&prefix[..100], &mut metadata)?;
+        }
+        _ => {}
+    }
+    metadata.insert(
+        "Source".into(),
+        "Virtual archive member; no extraction performed".into(),
+    );
+    Ok(metadata)
+}
+
+fn inspect_xml_text(text: &str, metadata: &mut indexmap::IndexMap<String, String>) -> Result<()> {
+    let mut reader = quick_xml::Reader::from_str(text);
+    reader.config_mut().trim_text(true);
+    let mut stack = Vec::new();
+    let mut count = 0usize;
+    loop {
+        match reader.read_event() {
+            Ok(quick_xml::events::Event::Start(event)) => {
+                if stack.len() >= 64 {
+                    return Err(ByteTrawlError::Limit("XML nesting exceeds 64".into()));
+                }
+                stack.push(String::from_utf8_lossy(event.name().as_ref()).into_owned());
+            }
+            Ok(quick_xml::events::Event::Text(text)) if count < 10_000 => {
+                let value = text
+                    .decode()
+                    .map_err(|error| ByteTrawlError::Malformed(error.to_string()))?;
+                if !value.trim().is_empty() {
+                    metadata.insert(stack.join("."), value.trim().chars().take(4096).collect());
+                    count += 1;
+                }
+            }
+            Ok(quick_xml::events::Event::End(_)) => {
+                stack.pop();
+            }
+            Ok(quick_xml::events::Event::Eof) => return Ok(()),
+            Err(error) => return Err(ByteTrawlError::Malformed(format!("XML: {error}"))),
+            _ => {}
+        }
+    }
+}
+
 fn ensure_structured_metadata_size(node: &ArtifactNode) -> Result<()> {
     if node.size > MAX_STRUCTURED_METADATA_BYTES {
         return Err(ByteTrawlError::Limit(format!(
@@ -649,6 +1062,13 @@ fn inspect_sqlite_metadata(
     metadata: &mut indexmap::IndexMap<String, String>,
 ) -> Result<()> {
     let bytes = read_prefix(path, 100)?;
+    inspect_sqlite_header(&bytes, metadata)
+}
+
+fn inspect_sqlite_header(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
     if bytes.len() < 100 || !bytes.starts_with(b"SQLite format 3\0") {
         return Err(ByteTrawlError::Malformed("truncated SQLite header".into()));
     }
@@ -1359,6 +1779,7 @@ fn add_entropy_findings(a: &mut BinaryAnalysis) {
                         section.entropy.unwrap_or_default()
                     ),
                     offset: Some(section.offset),
+                    locator: None,
                 }],
             });
         }
@@ -1431,7 +1852,12 @@ fn add_findings(a: &mut BinaryAnalysis) {
                 category: FindingCategory::MemorySafety,
                 title: format!("Writable and executable section: {}", s.name),
                 description: "This section is mapped writable and executable, weakening write-xor-execute protections.".into(),
-                evidence: vec![Evidence { label: "Permissions".into(), value: permissions.into(), offset: Some(s.offset) }],
+                evidence: vec![Evidence {
+                    label: "Permissions".into(),
+                    value: permissions.into(),
+                    offset: Some(s.offset),
+                    locator: None,
+                }],
             });
         }
     }
@@ -1778,6 +2204,23 @@ pub fn extract_strings_file_cancellable(
     extract_strings_inner(&map, minimum, limit, Some(cancel))
 }
 
+pub fn extract_strings_node_cancellable(
+    node: &ArtifactNode,
+    minimum: usize,
+    limit: usize,
+    cancel: &CancellationToken,
+) -> Result<Vec<ExtractedString>> {
+    cancel.check()?;
+    match node.source.as_ref() {
+        Some(ArtifactSource::ArchiveMember { .. }) => {
+            let bytes = ArtifactReader::open(node)?.read_all(MAX_ARCHIVE_MEMBER_BYTES)?;
+            cancel.check()?;
+            extract_strings_inner(&bytes, minimum, limit, Some(cancel))
+        }
+        _ => extract_strings_file_cancellable(&node.path, minimum, limit, cancel),
+    }
+}
+
 pub fn search_file(
     path: &Path,
     needle: &[u8],
@@ -1824,6 +2267,33 @@ pub fn search_file(
         buffer.copy_within(available - keep..available, 0);
         absolute += read as u64;
         carried = keep;
+    }
+}
+
+pub fn search_node(
+    node: &ArtifactNode,
+    needle: &[u8],
+    start: u64,
+    cancel: &CancellationToken,
+) -> Result<Option<u64>> {
+    if needle.is_empty() {
+        return Ok(None);
+    }
+    match node.source.as_ref() {
+        Some(ArtifactSource::ArchiveMember { .. }) => {
+            cancel.check()?;
+            let reader = ArtifactReader::open(node)?;
+            if start >= reader.len() {
+                return Ok(None);
+            }
+            let bytes = reader.read_all(MAX_ARCHIVE_MEMBER_BYTES)?;
+            cancel.check()?;
+            Ok(bytes[start as usize..]
+                .windows(needle.len())
+                .position(|window| window == needle)
+                .map(|position| start + position as u64))
+        }
+        _ => search_file(&node.path, needle, start, cancel),
     }
 }
 
@@ -1961,7 +2431,7 @@ fn global_search_impl(
             }
         }
         if node.size <= 128 * 1024 * 1024
-            && let Ok(strings) = extract_strings_file_cancellable(&node.path, 4, 10_000, cancel)
+            && let Ok(strings) = extract_strings_node_cancellable(node, 4, 10_000, cancel)
         {
             for string in strings {
                 push_hit(
@@ -2008,45 +2478,32 @@ fn is_ascii(b: u8) -> bool {
 }
 
 pub struct HexReader {
-    file: File,
-    len: u64,
+    reader: ArtifactReader,
 }
 impl HexReader {
     pub fn open(path: &Path) -> Result<Self> {
-        let file = File::open(path).map_err(|source| ByteTrawlError::Io {
-            path: path.into(),
-            source,
-        })?;
-        let len = file
-            .metadata()
-            .map_err(|source| ByteTrawlError::Io {
-                path: path.into(),
-                source,
-            })?
-            .len();
-        Ok(Self { file, len })
+        let node = ArtifactNode::new(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("artifact"),
+            path.to_path_buf(),
+            ArtifactKind::Unknown,
+        );
+        Self::open_node(&node)
+    }
+    pub fn open_node(node: &ArtifactNode) -> Result<Self> {
+        Ok(Self {
+            reader: ArtifactReader::open(node)?,
+        })
     }
     pub fn len(&self) -> u64 {
-        self.len
+        self.reader.len()
     }
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.reader.is_empty()
     }
     pub fn read_chunk(&mut self, offset: u64, length: usize) -> Result<Vec<u8>> {
-        self.file
-            .seek(SeekFrom::Start(offset.min(self.len)))
-            .map_err(|source| ByteTrawlError::Io {
-                path: PathBuf::from("<hex reader>"),
-                source,
-            })?;
-        let mut b = vec![0; length.min(self.len.saturating_sub(offset) as usize)];
-        self.file
-            .read_exact(&mut b)
-            .map_err(|source| ByteTrawlError::Io {
-                path: PathBuf::from("<hex reader>"),
-                source,
-            })?;
-        Ok(b)
+        self.reader.read_range(offset, length)
     }
 }
 
@@ -2755,5 +3212,133 @@ mod tests {
             Err(ByteTrawlError::Limit(_))
         ));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn ipa_zip_opens_as_a_virtual_member_tree_without_extraction() {
+        let path =
+            std::env::temp_dir().join(format!("bytetrawl-virtual-{}.ipa", uuid::Uuid::new_v4()));
+        let file = File::create(&path).expect("create IPA fixture");
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        writer
+            .start_file("Payload/Example.app/Info.plist", options)
+            .expect("start Info.plist entry");
+        writer
+            .write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+                <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+                <plist version="1.0"><dict>
+                <key>CFBundleIdentifier</key><string>app.xnu.ByteTrawlFixture</string>
+                <key>CFBundleExecutable</key><string>Example</string>
+                </dict></plist>"#,
+            )
+            .expect("write Info.plist entry");
+        writer
+            .start_file("Payload/Example.app/Example", options)
+            .expect("start executable entry");
+        writer
+            .write_all(b"virtual-member-bytes")
+            .expect("write executable entry");
+        writer
+            .start_file("../escape", options)
+            .expect("start unsafe entry");
+        writer.write_all(b"unsafe").expect("write unsafe entry");
+        writer.finish().expect("finish IPA fixture");
+
+        let artifact =
+            open_artifact(&path, &CancellationToken::default()).expect("open virtual IPA artifact");
+        assert_eq!(
+            artifact
+                .properties
+                .get("Package Format")
+                .map(String::as_str),
+            Some("Apple iOS IPA")
+        );
+        let payload = artifact
+            .children
+            .iter()
+            .find(|node| node.name == "Payload")
+            .expect("Payload virtual directory");
+        let app = payload
+            .children
+            .iter()
+            .find(|node| node.name == "Example.app")
+            .expect("application virtual directory");
+        assert_eq!(app.kind, ArtifactKind::Application);
+        let executable = app
+            .children
+            .iter()
+            .find(|node| node.name == "Example")
+            .expect("virtual executable member");
+        assert!(executable.is_file());
+        assert!(artifact.children.iter().all(|node| node.name != "escape"));
+
+        let info_plist = app
+            .children
+            .iter()
+            .find(|node| node.name == "Info.plist")
+            .expect("virtual Info.plist member");
+        let metadata = inspect_metadata(info_plist).expect("inspect virtual plist metadata");
+        assert_eq!(
+            metadata.get("CFBundleIdentifier").map(String::as_str),
+            Some("app.xnu.ByteTrawlFixture")
+        );
+        assert_eq!(
+            metadata.get("Source").map(String::as_str),
+            Some("Virtual archive member; no extraction performed")
+        );
+
+        let reader = ArtifactReader::open(executable).expect("open archive member reader");
+        assert_eq!(reader.len(), 20);
+        assert_eq!(
+            reader.read_prefix(7).expect("read member prefix"),
+            b"virtual"
+        );
+        assert_eq!(
+            reader.read_range(8, 6).expect("read member range"),
+            b"member"
+        );
+        assert!(matches!(reader.read_all(8), Err(ByteTrawlError::Limit(_))));
+        assert_eq!(
+            search_node(executable, b"member", 0, &CancellationToken::default())
+                .expect("search virtual member"),
+            Some(8)
+        );
+        let strings =
+            extract_strings_node_cancellable(executable, 4, 10, &CancellationToken::default())
+                .expect("extract strings from virtual member");
+        assert!(
+            strings
+                .iter()
+                .any(|string| string.value == "virtual-member-bytes")
+        );
+        let mut hex = HexReader::open_node(executable).expect("open virtual member hex reader");
+        assert_eq!(
+            hex.read_chunk(8, 6).expect("read virtual member hex chunk"),
+            b"member"
+        );
+
+        std::fs::remove_file(path).expect("remove IPA fixture");
+    }
+
+    #[test]
+    fn cancelled_zip_discovery_stops_before_member_enumeration() {
+        let path =
+            std::env::temp_dir().join(format!("bytetrawl-cancel-{}.zip", uuid::Uuid::new_v4()));
+        let file = File::create(&path).expect("create ZIP fixture");
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("member.txt", zip::write::SimpleFileOptions::default())
+            .expect("start ZIP member");
+        writer.write_all(b"content").expect("write ZIP member");
+        writer.finish().expect("finish ZIP fixture");
+        let cancellation = CancellationToken::default();
+        cancellation.cancel();
+        assert!(matches!(
+            open_artifact(&path, &cancellation),
+            Err(ByteTrawlError::Cancelled)
+        ));
+        std::fs::remove_file(path).expect("remove ZIP fixture");
     }
 }
