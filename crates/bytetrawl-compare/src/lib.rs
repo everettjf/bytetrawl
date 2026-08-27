@@ -26,6 +26,30 @@ pub struct FileChange {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileMove {
+    pub before_path: PathBuf,
+    pub after_path: PathBuf,
+    pub bytes: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DirectoryDelta {
+    pub path: PathBuf,
+    pub before_bytes: u64,
+    pub after_bytes: u64,
+    pub delta_bytes: i128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DuplicateGroup {
+    pub sha256: String,
+    pub bytes_each: u64,
+    pub reclaimable_bytes: u64,
+    pub paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ValueChange {
     pub field: String,
     pub before: Option<String>,
@@ -61,6 +85,9 @@ pub struct CompareReportV1 {
     pub after_bytes: u64,
     pub delta_bytes: i128,
     pub files: Vec<FileChange>,
+    pub moved_files: Vec<FileMove>,
+    pub directory_deltas: Vec<DirectoryDelta>,
+    pub duplicate_groups: Vec<DuplicateGroup>,
     pub largest_growth: Vec<FileChange>,
     pub ipa: Option<IpaChanges>,
 }
@@ -103,6 +130,59 @@ pub fn compare_artifacts(
             })
         })
         .collect::<Vec<_>>();
+    let mut removed_by_identity = IndexMap::<(u64, String), Vec<PathBuf>>::new();
+    let mut added_by_identity = IndexMap::<(u64, String), Vec<PathBuf>>::new();
+    for change in &files {
+        match change.kind {
+            ChangeKind::Removed => {
+                if let Some(snapshot) = before_files.get(&change.path) {
+                    removed_by_identity
+                        .entry((snapshot.size, snapshot.sha256.clone()))
+                        .or_default()
+                        .push(change.path.clone());
+                }
+            }
+            ChangeKind::Added => {
+                if let Some(snapshot) = after_files.get(&change.path) {
+                    added_by_identity
+                        .entry((snapshot.size, snapshot.sha256.clone()))
+                        .or_default()
+                        .push(change.path.clone());
+                }
+            }
+            ChangeKind::Modified => {}
+        }
+    }
+    let mut moved_files = Vec::new();
+    for (identity, removed) in &mut removed_by_identity {
+        let Some(added) = added_by_identity.get_mut(identity) else {
+            continue;
+        };
+        removed.sort();
+        added.sort();
+        for (before_path, after_path) in removed.iter().zip(added.iter()) {
+            moved_files.push(FileMove {
+                before_path: before_path.clone(),
+                after_path: after_path.clone(),
+                bytes: identity.0,
+                sha256: identity.1.clone(),
+            });
+        }
+    }
+    let moved_before = moved_files
+        .iter()
+        .map(|item| item.before_path.clone())
+        .collect::<IndexSet<_>>();
+    let moved_after = moved_files
+        .iter()
+        .map(|item| item.after_path.clone())
+        .collect::<IndexSet<_>>();
+    files.retain(|change| match change.kind {
+        ChangeKind::Removed => !moved_before.contains(&change.path),
+        ChangeKind::Added => !moved_after.contains(&change.path),
+        ChangeKind::Modified => true,
+    });
+    moved_files.sort_by(|left, right| left.before_path.cmp(&right.before_path));
     files.sort_by(|left, right| left.path.cmp(&right.path));
     let mut largest_growth = files
         .iter()
@@ -112,7 +192,7 @@ pub fn compare_artifacts(
     largest_growth.sort_by(|left, right| right.delta_bytes.cmp(&left.delta_bytes));
     largest_growth.truncate(50);
     Ok(CompareReportV1 {
-        schema_version: "1.0".into(),
+        schema_version: "1.1".into(),
         generator: format!("ByteTrawl/{}", env!("CARGO_PKG_VERSION")),
         before: before.path.clone(),
         after: after.path.clone(),
@@ -120,6 +200,9 @@ pub fn compare_artifacts(
         after_bytes,
         delta_bytes: after_bytes as i128 - before_bytes as i128,
         files,
+        moved_files,
+        directory_deltas: directory_deltas(&before_files, &after_files),
+        duplicate_groups: duplicate_groups(&after_files),
         largest_growth,
         ipa: before_ipa
             .zip(after_ipa)
@@ -148,7 +231,7 @@ fn file_snapshots(
         let mut offset = 0u64;
         while offset < reader.len() {
             cancel.check()?;
-            let bytes = reader.read_range(offset, 1024 * 1024)?;
+            let bytes = reader.read_range_cancellable(offset, 1024 * 1024, cancel)?;
             if bytes.is_empty() {
                 break;
             }
@@ -164,6 +247,83 @@ fn file_snapshots(
         );
     }
     Ok(snapshots)
+}
+
+fn directory_sizes(files: &IndexMap<PathBuf, FileSnapshot>) -> IndexMap<PathBuf, u64> {
+    let mut sizes = IndexMap::new();
+    for (path, snapshot) in files {
+        let mut parent = path.parent();
+        while let Some(directory) = parent {
+            *sizes.entry(directory.to_path_buf()).or_default() += snapshot.size;
+            parent = directory.parent();
+        }
+    }
+    sizes
+}
+
+fn directory_deltas(
+    before: &IndexMap<PathBuf, FileSnapshot>,
+    after: &IndexMap<PathBuf, FileSnapshot>,
+) -> Vec<DirectoryDelta> {
+    let before_sizes = directory_sizes(before);
+    let after_sizes = directory_sizes(after);
+    let paths = before_sizes
+        .keys()
+        .chain(after_sizes.keys())
+        .cloned()
+        .collect::<IndexSet<_>>();
+    let mut deltas = paths
+        .into_iter()
+        .filter_map(|path| {
+            let before_bytes = before_sizes.get(&path).copied().unwrap_or_default();
+            let after_bytes = after_sizes.get(&path).copied().unwrap_or_default();
+            (before_bytes != after_bytes).then_some(DirectoryDelta {
+                path,
+                before_bytes,
+                after_bytes,
+                delta_bytes: after_bytes as i128 - before_bytes as i128,
+            })
+        })
+        .collect::<Vec<_>>();
+    deltas.sort_by(|left, right| {
+        right
+            .delta_bytes
+            .abs()
+            .cmp(&left.delta_bytes.abs())
+            .then(left.path.cmp(&right.path))
+    });
+    deltas
+}
+
+fn duplicate_groups(files: &IndexMap<PathBuf, FileSnapshot>) -> Vec<DuplicateGroup> {
+    let mut groups = IndexMap::<(u64, String), Vec<PathBuf>>::new();
+    for (path, snapshot) in files {
+        groups
+            .entry((snapshot.size, snapshot.sha256.clone()))
+            .or_default()
+            .push(path.clone());
+    }
+    let mut duplicates = groups
+        .into_iter()
+        .filter_map(|((bytes_each, sha256), mut paths)| {
+            (paths.len() > 1).then(|| {
+                paths.sort();
+                DuplicateGroup {
+                    sha256,
+                    bytes_each,
+                    reclaimable_bytes: bytes_each.saturating_mul(paths.len() as u64 - 1),
+                    paths,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    duplicates.sort_by(|left, right| {
+        right
+            .reclaimable_bytes
+            .cmp(&left.reclaimable_bytes)
+            .then(left.sha256.cmp(&right.sha256))
+    });
+    duplicates
 }
 
 fn logical_path(root: &ArtifactNode, node: &ArtifactNode) -> Option<PathBuf> {
@@ -372,13 +532,31 @@ mod tests {
         std::fs::write(after_path.join("new"), vec![b'n'; 7]).expect("write added file");
         std::fs::write(before_path.join("same-size"), b"before").expect("write baseline content");
         std::fs::write(after_path.join("same-size"), b"after!").expect("write candidate content");
+        std::fs::write(before_path.join("old-name"), b"moved-content")
+            .expect("write moved baseline");
+        std::fs::write(after_path.join("new-name"), b"moved-content")
+            .expect("write moved candidate");
+        std::fs::create_dir(after_path.join("assets")).expect("create assets directory");
+        std::fs::write(after_path.join("assets/duplicate-a"), b"dup").expect("write duplicate a");
+        std::fs::write(after_path.join("assets/duplicate-b"), b"dup").expect("write duplicate b");
         let cancellation = CancellationToken::default();
         let before = open_artifact(&before_path, &cancellation).expect("open baseline");
         let after = open_artifact(&after_path, &cancellation).expect("open candidate");
         let report = compare_artifacts(&before, &after, None, None, &cancellation)
             .expect("compare artifacts");
-        assert_eq!(report.delta_bytes, 22);
-        assert_eq!(report.files.len(), 4);
+        assert_eq!(report.delta_bytes, 28);
+        assert_eq!(report.files.len(), 6);
+        assert_eq!(report.moved_files.len(), 1);
+        assert_eq!(report.moved_files[0].before_path, PathBuf::from("old-name"));
+        assert_eq!(report.moved_files[0].after_path, PathBuf::from("new-name"));
+        assert_eq!(report.duplicate_groups.len(), 1);
+        assert_eq!(report.duplicate_groups[0].reclaimable_bytes, 3);
+        assert!(
+            report
+                .directory_deltas
+                .iter()
+                .any(|delta| { delta.path == PathBuf::from("assets") && delta.delta_bytes == 6 })
+        );
         assert_eq!(report.largest_growth[0].path, PathBuf::from("a"));
         assert_eq!(report.largest_growth[0].delta_bytes, 20);
         assert!(

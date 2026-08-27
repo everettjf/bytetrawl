@@ -2249,6 +2249,11 @@ impl ByteTrawlApp {
             ("Candidate size".into(), format_size(report.after_bytes)),
             ("Size delta".into(), format_signed_size(report.delta_bytes)),
             ("Changed files".into(), report.files.len().to_string()),
+            ("Moved files".into(), report.moved_files.len().to_string()),
+            (
+                "Duplicate groups".into(),
+                report.duplicate_groups.len().to_string(),
+            ),
         ];
         if let Some(ipa) = report.ipa.as_ref() {
             for change in &ipa.identity {
@@ -2320,6 +2325,45 @@ impl ByteTrawlApp {
                 ]
             })
             .collect();
+        let moved_rows = report
+            .moved_files
+            .iter()
+            .map(|item| {
+                vec![
+                    item.before_path.display().to_string(),
+                    item.after_path.display().to_string(),
+                    format_size(item.bytes),
+                ]
+            })
+            .collect();
+        let directory_rows = report
+            .directory_deltas
+            .iter()
+            .take(50)
+            .map(|item| {
+                vec![
+                    item.path.display().to_string(),
+                    format_size(item.before_bytes),
+                    format_size(item.after_bytes),
+                    format_signed_size(item.delta_bytes),
+                ]
+            })
+            .collect();
+        let duplicate_rows = report
+            .duplicate_groups
+            .iter()
+            .map(|item| {
+                vec![
+                    item.paths
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    format_size(item.bytes_each),
+                    format_size(item.reclaimable_bytes),
+                ]
+            })
+            .collect();
         div()
             .flex_1()
             .min_h_0()
@@ -2331,6 +2375,24 @@ impl ByteTrawlApp {
                 "Contents & Size Changes",
                 &["Change", "Path", "Before", "After", "Delta"],
                 rows,
+                cx,
+            ))
+            .child(table_panel(
+                "Moved Files",
+                &["Before", "After", "Size"],
+                moved_rows,
+                cx,
+            ))
+            .child(table_panel(
+                "Directory Size Changes",
+                &["Directory", "Before", "After", "Delta"],
+                directory_rows,
+                cx,
+            ))
+            .child(table_panel(
+                "Candidate Duplicate Files",
+                &["Paths", "Each", "Reclaimable"],
+                duplicate_rows,
                 cx,
             ))
             .into_any_element()
