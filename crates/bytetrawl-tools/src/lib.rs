@@ -17,6 +17,11 @@ pub enum ToolAvailability {
     Available(PathBuf),
     Unavailable,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolBehavior {
+    Launch,
+    Capture,
+}
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
     pub success: bool,
@@ -30,6 +35,9 @@ pub trait ExternalTool: Send + Sync {
     fn id(&self) -> &'static str;
     fn display_name(&self) -> &'static str;
     fn detect(&self) -> ToolAvailability;
+    fn behavior(&self) -> ToolBehavior {
+        ToolBehavior::Launch
+    }
     fn supports(&self, artifact: &ArtifactNode) -> bool {
         artifact.path.is_file()
     }
@@ -94,6 +102,13 @@ impl ExternalTool for CommandTool {
             .find_map(|candidate| find_command(candidate))
             .map(ToolAvailability::Available)
             .unwrap_or(ToolAvailability::Unavailable)
+    }
+    fn behavior(&self) -> ToolBehavior {
+        if self.capture {
+            ToolBehavior::Capture
+        } else {
+            ToolBehavior::Launch
+        }
     }
     fn supports(&self, artifact: &ArtifactNode) -> bool {
         artifact.path.is_file()
@@ -370,6 +385,8 @@ mod tests {
     fn registry_is_extensible() {
         let r = ToolRegistry::standard();
         assert!(r.get("otool").is_some());
+        assert_eq!(r.get("otool").unwrap().behavior(), ToolBehavior::Capture);
+        assert_eq!(r.get("ghidra").unwrap().behavior(), ToolBehavior::Launch);
         for id in [
             "ghidra",
             "ida",

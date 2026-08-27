@@ -12,13 +12,14 @@ use bytetrawl_core::{
     ArtifactKind, ArtifactNode, BinaryAnalysis, BinaryPlatform, DependencyGraph, FileSummary,
     Severity, SignatureInfo, Workspace,
 };
-use bytetrawl_tools::{ToolAvailability, ToolRegistry};
+use bytetrawl_tools::{ToolAvailability, ToolBehavior, ToolRegistry};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     Disableable, Root, Sizable, StyledExt, Theme, ThemeMode,
     button::Button,
     input::{Copy, Cut, Input, InputEvent, InputState, Paste, Redo, SelectAll, Undo},
+    menu::{DropdownMenu as _, PopupMenuItem},
 };
 use std::{
     path::PathBuf,
@@ -1136,11 +1137,20 @@ impl ByteTrawlApp {
                         (
                             tool.id(),
                             tool.display_name(),
+                            tool.behavior(),
                             matches!(tool.detect(), ToolAvailability::Available(_)),
                         )
                     })
             })
             .collect();
+        let available_tools: Vec<_> = tool_items
+            .iter()
+            .filter(|(_, _, _, available)| *available)
+            .map(|(id, name, behavior, _)| (*id, *name, *behavior))
+            .collect();
+        let unavailable_tool_count = tool_items.len().saturating_sub(available_tools.len());
+        let available_tool_count = available_tools.len();
+        let tool_menu_view = cx.entity();
         let selected_values = self
             .selected_node()
             .map(|node| {
@@ -1278,26 +1288,58 @@ impl ByteTrawlApp {
                             )
                     })),
             )
-            .child(section_header("EXTERNAL TOOLS · EXPLICIT LAUNCH"))
+            .child(section_header("EXTERNAL TOOLS"))
             .child(
                 div()
-                    .id("external-tools-scroll")
+                    .id("external-tools")
                     .p_3()
-                    .max_h(px(360.))
-                    .overflow_scroll()
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .children(tool_items.into_iter().map(|(id, name, available)| {
-                        Button::new(SharedString::from(format!("tool-{id}")))
-                            .label(if available {
-                                format!("Open in {name}")
+                    .child(
+                        Button::new("external-tools-menu")
+                            .label(if available_tool_count == 0 {
+                                "No compatible tools installed".to_string()
                             } else {
-                                format!("{name} · not installed")
+                                format!("External Tools…  {available_tool_count}")
                             })
-                            .disabled(!available)
-                            .on_click(cx.listener(move |this, _, _, cx| this.launch_tool(id, cx)))
-                    })),
+                            .disabled(available_tool_count == 0)
+                            .dropdown_menu(move |menu, window, _| {
+                                let menu = available_tools.iter().fold(
+                                    menu.min_w(230.),
+                                    |menu, (id, name, behavior)| {
+                                        let id = *id;
+                                        let label = match behavior {
+                                            ToolBehavior::Launch => format!("Open in {name}"),
+                                            ToolBehavior::Capture => format!("Run {name}"),
+                                        };
+                                        menu.item(PopupMenuItem::new(label).on_click(
+                                            window.listener_for(
+                                                &tool_menu_view,
+                                                move |this, _, _, cx| this.launch_tool(id, cx),
+                                            ),
+                                        ))
+                                    },
+                                );
+                                menu.when(unavailable_tool_count > 0, |menu| {
+                                    menu.separator().item(PopupMenuItem::label(format!(
+                                        "{unavailable_tool_count} compatible tools not installed"
+                                    )))
+                                })
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(MUTED))
+                            .child(if available_tool_count == 0 {
+                                format!(
+                                    "{unavailable_tool_count} compatible integrations detected; install one to enable this menu."
+                                )
+                            } else {
+                                "Only compatible installed tools are shown.".to_string()
+                            }),
+                    ),
             )
             .when_some(self.tool_output.clone(), |details, (title, output)| {
                 details.child(section_header("TOOL OUTPUT")).child(
