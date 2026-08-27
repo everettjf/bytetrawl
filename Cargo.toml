@@ -6,6 +6,7 @@ members = [
     "crates/bytetrawl-analysis",
     "crates/bytetrawl-ios",
     "crates/bytetrawl-compare",
+    "crates/bytetrawl-policy",
     "crates/bytetrawl-signature",
     "crates/bytetrawl-tools",
     "crates/bytetrawl-cli",

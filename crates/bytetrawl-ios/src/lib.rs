@@ -45,6 +45,16 @@ pub struct IpaTarget {
     pub metadata: IpaMetadata,
     pub architectures: Vec<String>,
     pub has_privacy_manifest: bool,
+    pub privacy_manifest: Option<PrivacyManifest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct PrivacyManifest {
+    pub path: PathBuf,
+    pub tracking: bool,
+    pub tracking_domains: Vec<String>,
+    pub collected_data_types: Vec<String>,
+    pub accessed_api_categories: IndexMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -86,6 +96,7 @@ pub struct IpaAuditReportV1 {
     pub localizations: Vec<String>,
     pub privacy_usage_descriptions: IndexMap<String, String>,
     pub has_privacy_manifest: bool,
+    pub privacy_manifests: Vec<PrivacyManifest>,
     pub architectures: Vec<String>,
     pub signing: Option<IpaSigning>,
     pub findings: Vec<IpaFinding>,
@@ -172,6 +183,10 @@ pub fn audit_ipa(artifact: &ArtifactNode, cancel: &CancellationToken) -> Result<
         .transpose()
         .map_err(|error| ByteTrawlError::Malformed(format!("mobile provisioning: {error}")))?;
     let targets = collect_targets(main_app, &metadata, &architectures, &mut errors, cancel)?;
+    let privacy_manifests = targets
+        .iter()
+        .filter_map(|target| target.privacy_manifest.clone())
+        .collect();
     let mut report = IpaAuditReportV1 {
         schema_version: "1.0".into(),
         generator: format!("ByteTrawl/{}", env!("CARGO_PKG_VERSION")),
@@ -188,6 +203,7 @@ pub fn audit_ipa(artifact: &ArtifactNode, cancel: &CancellationToken) -> Result<
         localizations,
         privacy_usage_descriptions,
         has_privacy_manifest,
+        privacy_manifests,
         architectures,
         signing,
         findings: Vec::new(),
@@ -404,9 +420,76 @@ fn collect_targets(
             metadata,
             architectures,
             has_privacy_manifest: subtree_contains(bundle, "PrivacyInfo.xcprivacy"),
+            privacy_manifest: find_named(bundle, "PrivacyInfo.xcprivacy")
+                .map(parse_privacy_manifest)
+                .transpose()?,
         });
     }
     Ok(targets)
+}
+
+fn find_named<'a>(node: &'a ArtifactNode, name: &str) -> Option<&'a ArtifactNode> {
+    if node.name == name {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_named(child, name))
+}
+
+fn parse_privacy_manifest(node: &ArtifactNode) -> Result<PrivacyManifest> {
+    let value = read_plist(node)?;
+    let dict = value.as_dictionary().ok_or_else(|| {
+        ByteTrawlError::Malformed("PrivacyInfo.xcprivacy root is not a dictionary".into())
+    })?;
+    let mut tracking_domains = string_array(dict.get("NSPrivacyTrackingDomains"));
+    let mut collected_data_types = dict
+        .get("NSPrivacyCollectedDataTypes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_dictionary)
+        .filter_map(|entry| string(entry, "NSPrivacyCollectedDataType"))
+        .collect::<Vec<_>>();
+    let mut accessed_api_categories = IndexMap::new();
+    if let Some(entries) = dict
+        .get("NSPrivacyAccessedAPITypes")
+        .and_then(Value::as_array)
+    {
+        for entry in entries.iter().filter_map(Value::as_dictionary) {
+            if let Some(category) = string(entry, "NSPrivacyAccessedAPIType") {
+                let mut reasons = string_array(entry.get("NSPrivacyAccessedAPITypeReasons"));
+                reasons.sort();
+                reasons.dedup();
+                accessed_api_categories.insert(category, reasons);
+            }
+        }
+    }
+    tracking_domains.sort();
+    tracking_domains.dedup();
+    collected_data_types.sort();
+    collected_data_types.dedup();
+    accessed_api_categories.sort_keys();
+    Ok(PrivacyManifest {
+        path: member_path(node).unwrap_or_else(|| node.path.clone()),
+        tracking: dict
+            .get("NSPrivacyTracking")
+            .and_then(Value::as_boolean)
+            .unwrap_or(false),
+        tracking_domains,
+        collected_data_types,
+        accessed_api_categories,
+    })
+}
+
+fn string_array(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_string)
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 fn parse_mobileprovision(node: &ArtifactNode) -> Result<IpaSigning> {
@@ -571,6 +654,37 @@ fn evaluate_rules(report: &IpaAuditReportV1, app_path: &Path) -> Vec<IpaFinding>
             evidence(app_path, None, None),
         ));
     }
+    if let Some(signing) = report.signing.as_ref() {
+        if let Some(expiration) = signing.expiration
+            && expiration < Utc::now()
+        {
+            let expiration = expiration.to_rfc3339();
+            findings.push(finding(
+                "expired-provisioning-profile",
+                Severity::High,
+                "Expired provisioning profile",
+                "The embedded provisioning profile has expired.",
+                evidence(app_path, Some("ExpirationDate"), Some(&expiration)),
+            ));
+        }
+        if let (Some(application_identifier), Some(bundle_identifier)) = (
+            signing.application_identifier.as_deref(),
+            report.metadata.bundle_identifier.as_deref(),
+        ) && !application_identifier.ends_with(bundle_identifier)
+        {
+            findings.push(finding(
+                "application-id-mismatch",
+                Severity::High,
+                "Provisioning Application ID mismatch",
+                "The provisioning application-identifier does not match CFBundleIdentifier.",
+                evidence(
+                    app_path,
+                    Some("application-identifier"),
+                    Some(application_identifier),
+                ),
+            ));
+        }
+    }
     for (key, value) in &report.privacy_usage_descriptions {
         if value.trim().chars().count() < 10 {
             findings.push(finding(
@@ -629,7 +743,17 @@ mod tests {
         add_file(
             &mut writer,
             "Payload/Fixture.app/PrivacyInfo.xcprivacy",
-            &plist(""),
+            &plist(
+                "<key>NSPrivacyTracking</key><true/>\
+                 <key>NSPrivacyTrackingDomains</key><array><string>tracker.example</string></array>\
+                 <key>NSPrivacyCollectedDataTypes</key><array><dict>\
+                 <key>NSPrivacyCollectedDataType</key><string>NSPrivacyCollectedDataTypeEmailAddress</string>\
+                 </dict></array>\
+                 <key>NSPrivacyAccessedAPITypes</key><array><dict>\
+                 <key>NSPrivacyAccessedAPIType</key><string>NSPrivacyAccessedAPICategoryFileTimestamp</string>\
+                 <key>NSPrivacyAccessedAPITypeReasons</key><array><string>C617.1</string></array>\
+                 </dict></array>",
+            ),
         );
         add_file(
             &mut writer,
@@ -688,6 +812,12 @@ mod tests {
                 .any(|path| path.ends_with("Share.appex"))
         );
         assert!(report.has_privacy_manifest);
+        assert_eq!(report.privacy_manifests.len(), 1);
+        assert!(report.privacy_manifests[0].tracking);
+        assert_eq!(
+            report.privacy_manifests[0].tracking_domains,
+            ["tracker.example"]
+        );
         assert_eq!(report.targets.len(), 3);
         assert_eq!(
             report

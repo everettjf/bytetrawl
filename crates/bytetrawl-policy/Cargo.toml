@@ -1,0 +1,14 @@
+[package]
+name = "bytetrawl-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytetrawl-core = { path = "../bytetrawl-core" }
+bytetrawl-ios = { path = "../bytetrawl-ios" }
+bytetrawl-compare = { path = "../bytetrawl-compare" }
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

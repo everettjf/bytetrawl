@@ -9,6 +9,7 @@ bytetrawl-core = { path = "../bytetrawl-core" }
 bytetrawl-analysis = { path = "../bytetrawl-analysis" }
 bytetrawl-ios = { path = "../bytetrawl-ios" }
 bytetrawl-compare = { path = "../bytetrawl-compare" }
+bytetrawl-policy = { path = "../bytetrawl-policy" }
 clap.workspace = true
 ctrlc.workspace = true
 serde.workspace = true

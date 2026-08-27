@@ -2135,6 +2135,28 @@ impl ByteTrawlApp {
                 .iter()
                 .map(|(key, value)| (key.clone(), value.clone())),
         );
+        for manifest in &report.privacy_manifests {
+            let prefix = manifest.path.display();
+            values.push((
+                format!("{prefix} · Tracking"),
+                manifest.tracking.to_string(),
+            ));
+            if !manifest.tracking_domains.is_empty() {
+                values.push((
+                    format!("{prefix} · Tracking domains"),
+                    manifest.tracking_domains.join(", "),
+                ));
+            }
+            if !manifest.collected_data_types.is_empty() {
+                values.push((
+                    format!("{prefix} · Collected data"),
+                    manifest.collected_data_types.join(", "),
+                ));
+            }
+            for (category, reasons) in &manifest.accessed_api_categories {
+                values.push((format!("{prefix} · {category}"), reasons.join(", ")));
+            }
+        }
         kv_panel("Privacy Declarations", values).into_any_element()
     }
     fn render_ipa_signing(&self) -> impl IntoElement {

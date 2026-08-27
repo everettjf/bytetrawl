@@ -899,6 +899,7 @@ dependencies = [
  "bytetrawl-compare",
  "bytetrawl-core",
  "bytetrawl-ios",
+ "bytetrawl-policy",
  "chrono",
  "clap",
  "ctrlc",
@@ -962,6 +963,17 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "zip",
+]
+
+[[package]]
+name = "bytetrawl-policy"
+version = "1.0.3"
+dependencies = [
+ "bytetrawl-compare",
+ "bytetrawl-core",
+ "bytetrawl-ios",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

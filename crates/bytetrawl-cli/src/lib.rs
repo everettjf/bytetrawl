@@ -10,6 +10,7 @@ use bytetrawl_core::{
     SignatureInfo,
 };
 use bytetrawl_ios::{IpaAuditReportV1, audit_ipa};
+use bytetrawl_policy::{PolicyViolation, ReleasePolicyV1, evaluate_compare, evaluate_ipa};
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use indexmap::IndexMap;
@@ -56,6 +57,9 @@ pub struct CompareArgs {
     /// Exit with status 2 when installed-size growth exceeds this many bytes.
     #[arg(long)]
     pub max_growth_bytes: Option<i128>,
+    /// Versioned JSON release policy.
+    #[arg(long)]
+    pub policy: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -74,6 +78,9 @@ pub struct InspectArgs {
     /// Accepted for explicitness; JSON is the stable default output format.
     #[arg(long)]
     pub json: bool,
+    /// Report format.
+    #[arg(long, value_enum, default_value_t = ReportFormat::Json)]
+    pub format: ReportFormat,
 
     /// Analysis depth. Deep enables SHA-256, entropy, strings, signatures, and graph building.
     #[arg(long, value_enum, default_value_t = AnalysisDepth::Standard)]
@@ -110,6 +117,9 @@ pub struct InspectArgs {
     /// Exit with status 2 if this severity or higher is found.
     #[arg(long, value_enum)]
     pub fail_on: Option<SeverityThreshold>,
+    /// Versioned JSON release policy.
+    #[arg(long)]
+    pub policy: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -133,6 +143,14 @@ pub enum SeverityThreshold {
     Medium,
     High,
     Critical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ReportFormat {
+    Json,
+    Markdown,
+    Html,
+    Sarif,
 }
 
 fn parse_bounded_usize(value: &str, minimum: usize, maximum: usize) -> Result<usize, String> {
@@ -164,6 +182,8 @@ pub struct InspectionReport {
     pub dependency_graph: Option<DependencyGraph>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ipa: Option<IpaAuditReportV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policy_violations: Vec<PolicyViolation>,
     pub findings: Vec<ReportFinding>,
     pub run: RunInfo,
 }
@@ -230,10 +250,27 @@ fn run_compare(args: CompareArgs) -> u8 {
     let cancellation = CancellationToken::default();
     match compare(&args, &cancellation) {
         Ok(report) => {
-            let failed = args
-                .max_growth_bytes
-                .is_some_and(|maximum| report.delta_bytes > maximum);
-            if let Err(error) = write_json(&report, args.output.as_deref(), args.pretty) {
+            let policy = args.policy.as_deref().map(load_policy).transpose();
+            let policy = match policy {
+                Ok(policy) => policy,
+                Err(error) => {
+                    eprintln!("bytetrawl-cli: {error}");
+                    return 1;
+                }
+            };
+            let policy_violations = policy
+                .as_ref()
+                .map(|policy| evaluate_compare(policy, &report))
+                .unwrap_or_default();
+            let failed = !policy_violations.is_empty()
+                || args
+                    .max_growth_bytes
+                    .is_some_and(|maximum| report.delta_bytes > maximum);
+            let output = CompareOutput {
+                report: &report,
+                policy_violations: &policy_violations,
+            };
+            if let Err(error) = write_json(&output, args.output.as_deref(), args.pretty) {
                 eprintln!("bytetrawl-cli: {error}");
                 return 1;
             }
@@ -244,6 +281,27 @@ fn run_compare(args: CompareArgs) -> u8 {
             1
         }
     }
+}
+
+#[derive(Serialize)]
+struct CompareOutput<'a> {
+    #[serde(flatten)]
+    report: &'a CompareReportV1,
+    #[serde(skip_serializing_if = "slice_is_empty")]
+    policy_violations: &'a [PolicyViolation],
+}
+
+fn slice_is_empty<T>(values: &[T]) -> bool {
+    values.is_empty()
+}
+
+fn load_policy(path: &Path) -> bytetrawl_core::Result<ReleasePolicyV1> {
+    let bytes = std::fs::read(path).map_err(|source| bytetrawl_core::ByteTrawlError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| bytetrawl_core::ByteTrawlError::Malformed(format!("policy: {error}")))
 }
 
 pub fn compare(
@@ -283,10 +341,13 @@ fn run_inspect(args: InspectArgs) -> u8 {
         Ok(report) => {
             let fail_on = args
                 .fail_on
-                .is_some_and(|threshold| report_reaches_threshold(&report, threshold));
+                .is_some_and(|threshold| report_reaches_threshold(&report, threshold))
+                || !report.policy_violations.is_empty();
             let cancelled = report.run.cancelled;
             let partial = report.run.partial;
-            if let Err(error) = write_report(&report, args.output.as_deref(), args.pretty) {
+            if let Err(error) =
+                write_report(&report, args.output.as_deref(), args.pretty, args.format)
+            {
                 eprintln!("bytetrawl-cli: {error}");
                 return 1;
             }
@@ -536,6 +597,12 @@ pub fn inspect(
     } else {
         None
     };
+    let policy_violations = if let (Some(path), Some(ipa)) = (args.policy.as_deref(), ipa.as_ref())
+    {
+        evaluate_ipa(&load_policy(path)?, ipa)
+    } else {
+        Vec::new()
+    };
     let partial = !run_errors.is_empty()
         || files.iter().any(|file| !file.errors.is_empty())
         || ipa.as_ref().is_some_and(|report| report.partial);
@@ -550,6 +617,7 @@ pub fn inspect(
         files,
         dependency_graph,
         ipa,
+        policy_violations,
         findings,
         run: RunInfo {
             started_at,
@@ -561,8 +629,126 @@ pub fn inspect(
     })
 }
 
-fn write_report(report: &InspectionReport, output: Option<&Path>, pretty: bool) -> io::Result<()> {
-    write_json(report, output, pretty)
+fn write_report(
+    report: &InspectionReport,
+    output: Option<&Path>,
+    pretty: bool,
+    format: ReportFormat,
+) -> io::Result<()> {
+    match format {
+        ReportFormat::Json => write_json(report, output, pretty),
+        ReportFormat::Markdown => write_bytes(&render_markdown(report), output),
+        ReportFormat::Html => write_bytes(&render_html(report), output),
+        ReportFormat::Sarif => write_json(&render_sarif(report), output, pretty),
+    }
+}
+
+fn write_bytes(contents: &str, output: Option<&Path>) -> io::Result<()> {
+    match output {
+        Some(path) => std::fs::write(path, contents),
+        None => {
+            let mut stdout = io::stdout().lock();
+            stdout.write_all(contents.as_bytes())?;
+            stdout.write_all(b"\n")
+        }
+    }
+}
+
+fn all_report_findings(report: &InspectionReport) -> Vec<(Severity, String, String)> {
+    let mut findings = report
+        .findings
+        .iter()
+        .map(|item| {
+            (
+                item.finding.severity,
+                item.finding.title.clone(),
+                item.path.display().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if let Some(ipa) = report.ipa.as_ref() {
+        findings.extend(ipa.findings.iter().map(|item| {
+            (
+                item.severity,
+                item.title.clone(),
+                item.evidence
+                    .first()
+                    .map(|evidence| evidence.path.display().to_string())
+                    .unwrap_or_default(),
+            )
+        }));
+    }
+    findings
+}
+
+fn render_markdown(report: &InspectionReport) -> String {
+    let mut output = format!(
+        "# ByteTrawl inspection\n\n- Artifact: `{}`\n- Files: {}\n- Partial: {}\n",
+        report.artifact.path.display(),
+        report.files.len(),
+        report.run.partial
+    );
+    if let Some(ipa) = report.ipa.as_ref() {
+        output.push_str(&format!(
+            "- Bundle ID: `{}`\n- Version: `{}` (`{}`)\n- Installed size: {} bytes\n",
+            ipa.metadata.bundle_identifier.as_deref().unwrap_or(""),
+            ipa.metadata.version.as_deref().unwrap_or(""),
+            ipa.metadata.build.as_deref().unwrap_or(""),
+            ipa.total_bytes
+        ));
+    }
+    output.push_str("\n## Findings\n\n| Severity | Finding | Evidence |\n|---|---|---|\n");
+    for (severity, title, evidence) in all_report_findings(report) {
+        output.push_str(&format!(
+            "| {severity:?} | {} | `{}` |\n",
+            title.replace('|', "\\|"),
+            evidence.replace('|', "\\|")
+        ));
+    }
+    output
+}
+
+fn render_html(report: &InspectionReport) -> String {
+    let rows = all_report_findings(report)
+        .into_iter()
+        .map(|(severity, title, evidence)| {
+            format!(
+                "<tr><td>{severity:?}</td><td>{}</td><td><code>{}</code></td></tr>",
+                html_escape(&title),
+                html_escape(&evidence)
+            )
+        })
+        .collect::<String>();
+    format!(
+        "<!doctype html><meta charset=\"utf-8\"><title>ByteTrawl inspection</title><style>body{{font:15px system-ui;max-width:1100px;margin:40px auto;color:#d7d3c6;background:#0d0c0a}}table{{width:100%;border-collapse:collapse}}td,th{{padding:9px;border:1px solid #302d26;text-align:left}}h1{{color:#9bd568}}</style><h1>ByteTrawl inspection</h1><p><code>{}</code></p><table><thead><tr><th>Severity</th><th>Finding</th><th>Evidence</th></tr></thead><tbody>{rows}</tbody></table>",
+        html_escape(&report.artifact.path.display().to_string())
+    )
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn render_sarif(report: &InspectionReport) -> serde_json::Value {
+    let results = all_report_findings(report)
+        .into_iter()
+        .map(|(severity, title, evidence)| {
+            serde_json::json!({
+                "level": match severity { Severity::Critical | Severity::High => "error", Severity::Medium => "warning", _ => "note" },
+                "message": { "text": title },
+                "locations": [{ "physicalLocation": { "artifactLocation": { "uri": evidence } } }]
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{ "tool": { "driver": { "name": "ByteTrawl", "version": env!("CARGO_PKG_VERSION") } }, "results": results }]
+    })
 }
 
 fn write_json(report: &impl Serialize, output: Option<&Path>, pretty: bool) -> io::Result<()> {
@@ -639,6 +825,7 @@ mod tests {
             output: None,
             pretty: false,
             json: true,
+            format: ReportFormat::Json,
             depth: AnalysisDepth::Standard,
             hashes: vec![],
             strings: false,
@@ -648,6 +835,7 @@ mod tests {
             min_string_length: 4,
             max_strings: 100,
             fail_on: None,
+            policy: None,
         }
     }
 
@@ -664,6 +852,9 @@ mod tests {
         let json = serde_json::to_value(&report).expect("serialize report");
         assert_eq!(json["generator"]["name"], "ByteTrawl");
         assert_eq!(json["files"][0]["metadata"]["name"], "\"fixture\"");
+        assert!(render_markdown(&report).starts_with("# ByteTrawl inspection"));
+        assert!(render_html(&report).contains("<!doctype html>"));
+        assert_eq!(render_sarif(&report)["version"], "2.1.0");
         let _ = std::fs::remove_dir_all(root);
     }
 
