@@ -9,6 +9,7 @@ members = [
     "crates/bytetrawl-policy",
     "crates/bytetrawl-android",
     "crates/bytetrawl-windows",
+    "crates/bytetrawl-linux",
     "crates/bytetrawl-signature",
     "crates/bytetrawl-tools",
     "crates/bytetrawl-cli",
@@ -54,6 +55,8 @@ flate2 = "1.1"
 clap = { version = "4.5", features = ["derive"] }
 ctrlc = "3.4"
 tempfile = "3.20"
+xz2 = "0.1"
+zstd = "0.13"
 
 [profile.release]
 lto = "thin"

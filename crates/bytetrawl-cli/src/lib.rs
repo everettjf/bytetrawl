@@ -11,9 +11,10 @@ use bytetrawl_core::{
     SignatureInfo,
 };
 use bytetrawl_ios::{IpaAuditReportV1, IpaViewCompatibleReport, audit_ipa, ipa_view_compatible};
+use bytetrawl_linux::{DebianReportV1, audit_deb, is_deb};
 use bytetrawl_policy::{
     PolicyViolation, ReleasePolicyV1, evaluate_android, evaluate_compare, evaluate_ipa,
-    evaluate_windows,
+    evaluate_linux, evaluate_windows,
 };
 use bytetrawl_windows::{WindowsPackageReportV1, audit_msix, is_msix};
 use chrono::{DateTime, Utc};
@@ -193,6 +194,8 @@ pub struct InspectionReport {
     pub android: Option<AndroidAuditReportV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub windows_package: Option<WindowsPackageReportV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linux_package: Option<DebianReportV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub policy_violations: Vec<PolicyViolation>,
     pub findings: Vec<ReportFinding>,
@@ -638,6 +641,20 @@ pub fn inspect(
     } else {
         None
     };
+    let linux_package = if is_deb(&artifact.path) {
+        match audit_deb(&artifact.path) {
+            Ok(report) => Some(report),
+            Err(error) => {
+                run_errors.push(ReportError {
+                    stage: "linux_package_audit",
+                    message: error.to_string(),
+                });
+                None
+            }
+        }
+    } else {
+        None
+    };
     let policy = args.policy.as_deref().map(load_policy).transpose()?;
     let mut policy_violations = Vec::new();
     if let (Some(policy), Some(ipa)) = (policy.as_ref(), ipa.as_ref()) {
@@ -648,6 +665,9 @@ pub fn inspect(
     }
     if let (Some(policy), Some(windows)) = (policy.as_ref(), windows_package.as_ref()) {
         policy_violations.extend(evaluate_windows(policy, windows));
+    }
+    if let (Some(policy), Some(linux)) = (policy.as_ref(), linux_package.as_ref()) {
+        policy_violations.extend(evaluate_linux(policy, linux));
     }
     let partial = !run_errors.is_empty()
         || files.iter().any(|file| !file.errors.is_empty())
@@ -667,6 +687,7 @@ pub fn inspect(
         ipa_view_compatibility,
         android,
         windows_package,
+        linux_package,
         policy_violations,
         findings,
         run: RunInfo {
@@ -739,6 +760,15 @@ fn all_report_findings(report: &InspectionReport) -> Vec<(Severity, String, Stri
     }
     if let Some(windows) = report.windows_package.as_ref() {
         findings.extend(windows.findings.iter().map(|item| {
+            (
+                item.severity,
+                item.title.clone(),
+                item.evidence_path.display().to_string(),
+            )
+        }));
+    }
+    if let Some(linux) = report.linux_package.as_ref() {
+        findings.extend(linux.findings.iter().map(|item| {
             (
                 item.severity,
                 item.title.clone(),

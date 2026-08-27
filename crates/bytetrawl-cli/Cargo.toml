@@ -12,6 +12,7 @@ bytetrawl-compare = { path = "../bytetrawl-compare" }
 bytetrawl-policy = { path = "../bytetrawl-policy" }
 bytetrawl-android = { path = "../bytetrawl-android" }
 bytetrawl-windows = { path = "../bytetrawl-windows" }
+bytetrawl-linux = { path = "../bytetrawl-linux" }
 clap.workspace = true
 ctrlc.workspace = true
 serde.workspace = true

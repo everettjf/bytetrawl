@@ -4,6 +4,7 @@ use bytetrawl_android::AndroidAuditReportV1;
 use bytetrawl_compare::CompareReportV1;
 use bytetrawl_core::Severity;
 use bytetrawl_ios::IpaAuditReportV1;
+use bytetrawl_linux::DebianReportV1;
 use bytetrawl_windows::WindowsPackageReportV1;
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +30,11 @@ pub struct ReleasePolicyV1 {
     pub forbidden_windows_capabilities: Vec<String>,
     #[serde(default)]
     pub require_windows_package_signature: bool,
+    pub max_linux_installed_bytes: Option<u64>,
+    #[serde(default)]
+    pub forbidden_linux_maintainer_scripts: Vec<String>,
+    #[serde(default)]
+    pub forbid_privileged_linux_files: bool,
 }
 
 fn schema_version() -> String {
@@ -215,6 +221,65 @@ pub fn evaluate_windows(
             message: "An APPX/MSIX package signature is required".into(),
         });
     }
+    violations
+}
+
+pub fn evaluate_linux(policy: &ReleasePolicyV1, report: &DebianReportV1) -> Vec<PolicyViolation> {
+    let mut violations = Vec::new();
+    if policy
+        .max_linux_installed_bytes
+        .is_some_and(|maximum| report.installed_bytes > maximum)
+    {
+        violations.push(PolicyViolation {
+            rule_id: "policy.max-linux-installed-bytes".into(),
+            severity: Severity::High,
+            message: format!(
+                "Linux installed size {} exceeds policy maximum",
+                report.installed_bytes
+            ),
+        });
+    }
+    for script in &report.maintainer_scripts {
+        if policy.forbidden_linux_maintainer_scripts.contains(script) {
+            violations.push(PolicyViolation {
+                rule_id: "policy.forbidden-linux-maintainer-script".into(),
+                severity: Severity::High,
+                message: format!("Linux maintainer script {script} is forbidden"),
+            });
+        }
+    }
+    if policy.forbid_privileged_linux_files {
+        violations.extend(
+            report
+                .files
+                .iter()
+                .filter(|file| !file.is_directory && file.mode & 0o6000 != 0)
+                .map(|file| PolicyViolation {
+                    rule_id: "policy.forbid-privileged-linux-files".into(),
+                    severity: Severity::High,
+                    message: format!("{} has mode {:o}", file.path.display(), file.mode),
+                }),
+        );
+    }
+    if let Some(minimum) = policy.fail_on_severity {
+        violations.extend(
+            report
+                .findings
+                .iter()
+                .filter(|finding| severity_rank(finding.severity) >= severity_rank(minimum))
+                .map(|finding| PolicyViolation {
+                    rule_id: finding.rule_id.clone(),
+                    severity: finding.severity,
+                    message: finding.title.clone(),
+                }),
+        );
+    }
+    violations.sort_by(|left, right| {
+        left.rule_id
+            .cmp(&right.rule_id)
+            .then(left.message.cmp(&right.message))
+    });
+    violations.dedup();
     violations
 }
 

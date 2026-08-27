@@ -14,6 +14,7 @@ bytetrawl-ios = { path = "../bytetrawl-ios" }
 bytetrawl-compare = { path = "../bytetrawl-compare" }
 bytetrawl-android = { path = "../bytetrawl-android" }
 bytetrawl-windows = { path = "../bytetrawl-windows" }
+bytetrawl-linux = { path = "../bytetrawl-linux" }
 bytetrawl-tools = { path = "../bytetrawl-tools" }
 gpui.workspace = true
 gpui-component.workspace = true

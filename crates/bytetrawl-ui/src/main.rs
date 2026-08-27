@@ -15,6 +15,7 @@ use bytetrawl_core::{
     Severity, SignatureInfo, Workspace,
 };
 use bytetrawl_ios::{IpaAuditReportV1, audit_ipa};
+use bytetrawl_linux::{DebianReportV1, audit_deb, is_deb};
 use bytetrawl_tools::{ToolAvailability, ToolBehavior, ToolRegistry};
 use bytetrawl_windows::{WindowsPackageReportV1, audit_msix, is_msix};
 use gpui::prelude::FluentBuilder;
@@ -87,6 +88,9 @@ enum InspectorTab {
     WindowsSummary,
     WindowsApplications,
     WindowsFindings,
+    LinuxSummary,
+    LinuxFiles,
+    LinuxFindings,
     IpaSummary,
     IpaTargets,
     IpaPrivacy,
@@ -121,6 +125,9 @@ impl InspectorTab {
             Self::WindowsSummary => "Windows Summary",
             Self::WindowsApplications => "Applications",
             Self::WindowsFindings => "Windows Findings",
+            Self::LinuxSummary => "Linux Summary",
+            Self::LinuxFiles => "Installed Files",
+            Self::LinuxFindings => "Linux Findings",
             Self::IpaSummary => "Summary",
             Self::IpaTargets => "Targets",
             Self::IpaPrivacy => "Privacy",
@@ -154,6 +161,9 @@ impl InspectorTab {
             Self::WindowsSummary,
             Self::WindowsApplications,
             Self::WindowsFindings,
+            Self::LinuxSummary,
+            Self::LinuxFiles,
+            Self::LinuxFindings,
             Self::IpaSummary,
             Self::IpaTargets,
             Self::IpaPrivacy,
@@ -188,6 +198,7 @@ struct ByteTrawlApp {
     comparison: Option<Arc<CompareReportV1>>,
     android_report: Option<Arc<AndroidAuditReportV1>>,
     windows_report: Option<Arc<WindowsPackageReportV1>>,
+    linux_report: Option<Arc<DebianReportV1>>,
     selected: Option<uuid::Uuid>,
     expanded_nodes: std::collections::HashSet<uuid::Uuid>,
     analysis: Option<Arc<BinaryAnalysis>>,
@@ -255,6 +266,7 @@ impl ByteTrawlApp {
             comparison: None,
             android_report: None,
             windows_report: None,
+            linux_report: None,
             selected: None,
             expanded_nodes: std::collections::HashSet::new(),
             analysis: None,
@@ -463,12 +475,16 @@ impl ByteTrawlApp {
                     let windows_report = is_msix(&root)
                         .then(|| audit_msix(&root, &cancellation))
                         .transpose()?;
+                    let linux_report = is_deb(&root.path)
+                        .then(|| audit_deb(&root.path))
+                        .transpose()?;
                     Ok::<_, bytetrawl_core::ByteTrawlError>((
                         root,
                         metadata,
                         ipa_report,
                         android_report,
                         windows_report,
+                        linux_report,
                     ))
                 })
                 .await;
@@ -478,7 +494,14 @@ impl ByteTrawlApp {
                 }
                 this.loading = false;
                 match result {
-                    Ok((root, metadata, ipa_report, android_report, windows_report)) => {
+                    Ok((
+                        root,
+                        metadata,
+                        ipa_report,
+                        android_report,
+                        windows_report,
+                        linux_report,
+                    )) => {
                         let opened_path = root.path.clone();
                         this.expanded_nodes.clear();
                         this.expanded_nodes.insert(root.id);
@@ -517,6 +540,7 @@ impl ByteTrawlApp {
                         this.ipa_report = ipa_report.map(Arc::new);
                         this.android_report = android_report.map(Arc::new);
                         this.windows_report = windows_report.map(Arc::new);
+                        this.linux_report = linux_report.map(Arc::new);
                         this.selected = Some(id);
                         this.analysis = None;
                         this.summary = None;
@@ -545,6 +569,10 @@ impl ByteTrawlApp {
                             && id == this.artifact.as_ref().map_or(id, |root| root.id)
                         {
                             this.tab = InspectorTab::WindowsSummary;
+                        } else if this.linux_report.is_some()
+                            && id == this.artifact.as_ref().map_or(id, |root| root.id)
+                        {
+                            this.tab = InspectorTab::LinuxSummary;
                         }
                         let should_analyze = this
                             .artifact
@@ -563,6 +591,7 @@ impl ByteTrawlApp {
                         this.ipa_report = None;
                         this.android_report = None;
                         this.windows_report = None;
+                        this.linux_report = None;
                         this.error = Some(e.to_string().into());
                         this.status = "Open failed".into();
                     }
@@ -1177,6 +1206,21 @@ impl ByteTrawlApp {
             ]);
             return tabs;
         }
+        let linux_root_selected = self.linux_report.is_some()
+            && self.selected_node().is_some_and(|node| {
+                self.artifact
+                    .as_ref()
+                    .is_some_and(|artifact| artifact.id == node.id)
+            });
+        if linux_root_selected {
+            tabs.extend([
+                InspectorTab::LinuxSummary,
+                InspectorTab::LinuxFiles,
+                InspectorTab::LinuxFindings,
+                InspectorTab::DependencyGraph,
+            ]);
+            return tabs;
+        }
         tabs.push(InspectorTab::Overview);
         if self.artifact.is_some() {
             tabs.push(InspectorTab::DependencyGraph);
@@ -1747,6 +1791,9 @@ impl ByteTrawlApp {
                 self.render_windows_applications(cx).into_any_element()
             }
             InspectorTab::WindowsFindings => self.render_windows_findings(cx).into_any_element(),
+            InspectorTab::LinuxSummary => self.render_linux_summary().into_any_element(),
+            InspectorTab::LinuxFiles => self.render_linux_files(cx).into_any_element(),
+            InspectorTab::LinuxFindings => self.render_linux_findings().into_any_element(),
             InspectorTab::IpaSummary => self.render_ipa_summary().into_any_element(),
             InspectorTab::IpaTargets => self.render_ipa_targets(cx).into_any_element(),
             InspectorTab::IpaPrivacy => self.render_ipa_privacy().into_any_element(),
@@ -2567,6 +2614,115 @@ impl ByteTrawlApp {
                     .on_click(
                         cx.listener(move |this, _, _, cx| this.navigate_to_evidence(&evidence, cx)),
                     )
+                    .child(
+                        div()
+                            .font_semibold()
+                            .text_color(rgb(TEXT))
+                            .child(finding.title),
+                    )
+                    .child(div().text_xs().text_color(rgb(MUTED)).child(format!(
+                        "{:?} · {} · {}",
+                        finding.severity,
+                        finding.rule_id,
+                        finding.evidence_path.display()
+                    )))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(MUTED))
+                            .child(finding.description),
+                    )
+            }))
+            .into_any_element()
+    }
+    fn render_linux_summary(&self) -> impl IntoElement {
+        let Some(report) = self.linux_report.as_deref() else {
+            return empty_state().into_any_element();
+        };
+        kv_panel(
+            "Debian Package Release Audit",
+            vec![
+                (
+                    "Package".into(),
+                    report.identity.package.clone().unwrap_or_default(),
+                ),
+                (
+                    "Version".into(),
+                    report.identity.version.clone().unwrap_or_default(),
+                ),
+                (
+                    "Architecture".into(),
+                    report.identity.architecture.clone().unwrap_or_default(),
+                ),
+                (
+                    "Maintainer".into(),
+                    report.identity.maintainer.clone().unwrap_or_default(),
+                ),
+                ("Dependencies".into(), report.identity.depends.join(", ")),
+                ("Installed bytes".into(), report.installed_bytes.to_string()),
+                ("Files".into(), report.files.len().to_string()),
+                (
+                    "Maintainer scripts".into(),
+                    report.maintainer_scripts.join(", "),
+                ),
+                ("Findings".into(), report.findings.len().to_string()),
+            ],
+        )
+        .into_any_element()
+    }
+    fn render_linux_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let rows = self
+            .linux_report
+            .as_deref()
+            .map(|report| {
+                report
+                    .top_files
+                    .iter()
+                    .map(|file| {
+                        vec![
+                            file.path.display().to_string(),
+                            file.size.to_string(),
+                            format!("{:o}", file.mode),
+                        ]
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        table_panel(
+            "Largest Installed Files",
+            &["Path", "Bytes", "Mode"],
+            rows,
+            cx,
+        )
+    }
+    fn render_linux_findings(&self) -> impl IntoElement {
+        let findings = self
+            .linux_report
+            .as_deref()
+            .map(|report| report.findings.clone())
+            .unwrap_or_default();
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(panel_title("Linux Package Findings"))
+            .when(findings.is_empty(), |panel| {
+                panel.child(info_panel(
+                    "Status",
+                    "No Linux package findings were produced.",
+                ))
+            })
+            .children(findings.into_iter().enumerate().map(|(index, finding)| {
+                div()
+                    .id(SharedString::from(format!("linux-finding-{index}")))
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(PANEL))
                     .child(
                         div()
                             .font_semibold()
