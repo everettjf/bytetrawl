@@ -7,5 +7,11 @@ license.workspace = true
 [dependencies]
 bytetrawl-core = { path = "../bytetrawl-core" }
 bytetrawl-ios = { path = "../bytetrawl-ios" }
+bytetrawl-analysis = { path = "../bytetrawl-analysis" }
 serde.workspace = true
 indexmap.workspace = true
+sha2.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

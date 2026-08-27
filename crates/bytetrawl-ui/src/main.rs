@@ -8,6 +8,7 @@ use bytetrawl_analysis::{
     inspect_metadata, inspect_signature_cancellable, open_artifact, resolve_dependencies,
     search_node,
 };
+use bytetrawl_compare::{CompareReportV1, compare_artifacts};
 use bytetrawl_core::{
     ArtifactKind, ArtifactNode, BinaryAnalysis, BinaryPlatform, DependencyGraph, FileSummary,
     Severity, SignatureInfo, Workspace,
@@ -41,6 +42,8 @@ actions!(
         OpenFile,
         OpenArtifact,
         OpenWorkspace,
+        CompareArtifacts,
+        CompareFolders,
         NewWindow,
         SaveWorkspace,
         FocusSearch,
@@ -75,6 +78,7 @@ fn take_startup_path() -> Option<PathBuf> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum InspectorTab {
     Search,
+    Compare,
     IpaSummary,
     IpaTargets,
     IpaPrivacy,
@@ -102,6 +106,7 @@ impl InspectorTab {
     fn label(self) -> &'static str {
         match self {
             Self::Search => "Search",
+            Self::Compare => "Compare",
             Self::IpaSummary => "Summary",
             Self::IpaTargets => "Targets",
             Self::IpaPrivacy => "Privacy",
@@ -128,6 +133,7 @@ impl InspectorTab {
     fn from_label(label: &str) -> Option<Self> {
         [
             Self::Search,
+            Self::Compare,
             Self::IpaSummary,
             Self::IpaTargets,
             Self::IpaPrivacy,
@@ -159,6 +165,7 @@ struct ByteTrawlApp {
     focus_handle: FocusHandle,
     artifact: Option<Arc<ArtifactNode>>,
     ipa_report: Option<Arc<IpaAuditReportV1>>,
+    comparison: Option<Arc<CompareReportV1>>,
     selected: Option<uuid::Uuid>,
     expanded_nodes: std::collections::HashSet<uuid::Uuid>,
     analysis: Option<Arc<BinaryAnalysis>>,
@@ -223,6 +230,7 @@ impl ByteTrawlApp {
             focus_handle,
             artifact: None,
             ipa_report: None,
+            comparison: None,
             selected: None,
             expanded_nodes: std::collections::HashSet::new(),
             analysis: None,
@@ -269,6 +277,80 @@ impl ByteTrawlApp {
         if let Some(path) = path {
             self.load(path, cx)
         }
+    }
+    fn choose_comparison(&mut self, folders: bool, cx: &mut Context<Self>) {
+        let baseline_dialog = rfd::FileDialog::new().set_title("Choose baseline artifact");
+        let Some(before) = (if folders {
+            baseline_dialog.pick_folder()
+        } else {
+            baseline_dialog.pick_file()
+        }) else {
+            return;
+        };
+        let candidate_dialog = rfd::FileDialog::new().set_title("Choose candidate artifact");
+        let Some(after) = (if folders {
+            candidate_dialog.pick_folder()
+        } else {
+            candidate_dialog.pick_file()
+        }) else {
+            return;
+        };
+        self.cancellation.cancel();
+        self.cancellation = CancellationToken::default();
+        self.task_generation = self.task_generation.wrapping_add(1);
+        let generation = self.task_generation;
+        let cancellation = self.cancellation.clone();
+        self.loading = true;
+        self.error = None;
+        self.status = "Comparing baseline and candidate…".into();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let baseline = open_artifact(&before, &cancellation)?;
+                    let candidate = open_artifact(&after, &cancellation)?;
+                    let baseline_ipa = baseline
+                        .properties
+                        .get("Package Format")
+                        .is_some_and(|format| format == "Apple iOS IPA")
+                        .then(|| audit_ipa(&baseline, &cancellation))
+                        .transpose()?;
+                    let candidate_ipa = candidate
+                        .properties
+                        .get("Package Format")
+                        .is_some_and(|format| format == "Apple iOS IPA")
+                        .then(|| audit_ipa(&candidate, &cancellation))
+                        .transpose()?;
+                    compare_artifacts(
+                        &baseline,
+                        &candidate,
+                        baseline_ipa.as_ref(),
+                        candidate_ipa.as_ref(),
+                        &cancellation,
+                    )
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.task_generation != generation {
+                    return;
+                }
+                this.loading = false;
+                match result {
+                    Ok(report) => {
+                        this.comparison = Some(Arc::new(report));
+                        this.tab = InspectorTab::Compare;
+                        this.status = "Comparison ready".into();
+                    }
+                    Err(error) => {
+                        this.error = Some(error.to_string().into());
+                        this.status = "Comparison failed".into();
+                    }
+                }
+                cx.notify();
+            })?;
+            anyhow::Ok(())
+        })
+        .detach();
     }
     fn save_workspace(&mut self, cx: &mut Context<Self>) {
         let Some(root) = self.artifact.as_ref() else {
@@ -997,6 +1079,9 @@ impl ByteTrawlApp {
         if !self.search_hits.is_empty() || self.tab == InspectorTab::Search {
             tabs.push(InspectorTab::Search);
         }
+        if self.comparison.is_some() {
+            tabs.push(InspectorTab::Compare);
+        }
         let ipa_root_selected = self.ipa_report.is_some()
             && self.selected_node().is_some_and(|node| {
                 self.artifact
@@ -1565,11 +1650,15 @@ impl ByteTrawlApp {
             )
     }
     fn render_tab(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.tab == InspectorTab::Compare {
+            return self.render_comparison(cx).into_any_element();
+        }
         let Some(node) = self.selected_node() else {
             return empty_state().into_any_element();
         };
         match self.tab {
             InspectorTab::Search => self.render_search(cx).into_any_element(),
+            InspectorTab::Compare => empty_state().into_any_element(),
             InspectorTab::IpaSummary => self.render_ipa_summary().into_any_element(),
             InspectorTab::IpaTargets => self.render_ipa_targets(cx).into_any_element(),
             InspectorTab::IpaPrivacy => self.render_ipa_privacy().into_any_element(),
@@ -2013,6 +2102,103 @@ impl ByteTrawlApp {
             })
             .unwrap_or_else(|| vec![("Status".into(), "No host signature result".into())]);
         kv_panel("Digital Signature", values)
+    }
+    fn render_comparison(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(report) = self.comparison.as_deref() else {
+            return empty_state().into_any_element();
+        };
+        let mut summary = vec![
+            ("Baseline".into(), report.before.display().to_string()),
+            ("Candidate".into(), report.after.display().to_string()),
+            ("Baseline size".into(), format_size(report.before_bytes)),
+            ("Candidate size".into(), format_size(report.after_bytes)),
+            ("Size delta".into(), format_signed_size(report.delta_bytes)),
+            ("Changed files".into(), report.files.len().to_string()),
+        ];
+        if let Some(ipa) = report.ipa.as_ref() {
+            for change in &ipa.identity {
+                summary.push((
+                    format!("IPA · {}", change.field),
+                    format!(
+                        "{} → {}",
+                        change.before.as_deref().unwrap_or("—"),
+                        change.after.as_deref().unwrap_or("—")
+                    ),
+                ));
+            }
+            for (label, changes) in [
+                ("Architectures", &ipa.architectures),
+                ("Targets", &ipa.targets),
+                ("Localizations", &ipa.localizations),
+                ("Privacy usage keys", &ipa.privacy_usage_keys),
+                ("Privacy manifest", &ipa.privacy_manifest_values),
+                ("Findings", &ipa.findings),
+            ] {
+                if !changes.added.is_empty() || !changes.removed.is_empty() {
+                    summary.push((
+                        format!("IPA · {label}"),
+                        format!(
+                            "+ [{}] · − [{}]",
+                            changes.added.join(", "),
+                            changes.removed.join(", ")
+                        ),
+                    ));
+                }
+            }
+            for change in &ipa.entitlements {
+                summary.push((
+                    format!("Entitlement · {}", change.field),
+                    format!(
+                        "{} → {}",
+                        change.before.as_deref().unwrap_or("—"),
+                        change.after.as_deref().unwrap_or("—")
+                    ),
+                ));
+            }
+            for change in &ipa.signing {
+                summary.push((
+                    format!("Signing · {}", change.field),
+                    format!(
+                        "{} → {}",
+                        change.before.as_deref().unwrap_or("—"),
+                        change.after.as_deref().unwrap_or("—")
+                    ),
+                ));
+            }
+        }
+        let rows = report
+            .files
+            .iter()
+            .map(|change| {
+                vec![
+                    format!("{:?}", change.kind),
+                    change.path.display().to_string(),
+                    change
+                        .before_bytes
+                        .map(format_size)
+                        .unwrap_or_else(|| "—".into()),
+                    change
+                        .after_bytes
+                        .map(format_size)
+                        .unwrap_or_else(|| "—".into()),
+                    format_signed_size(change.delta_bytes),
+                ]
+            })
+            .collect();
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .gap_5()
+            .child(kv_panel("Artifact Comparison", summary))
+            .child(table_panel(
+                "Contents & Size Changes",
+                &["Change", "Path", "Before", "After", "Delta"],
+                rows,
+                cx,
+            ))
+            .into_any_element()
     }
     fn render_ipa_summary(&self) -> impl IntoElement {
         let Some(report) = self.ipa_report.as_deref() else {
@@ -3007,6 +3193,17 @@ fn format_size(v: u64) -> String {
         format!("{v} B")
     }
 }
+fn format_signed_size(value: i128) -> String {
+    let sign = if value > 0 {
+        "+"
+    } else if value < 0 {
+        "−"
+    } else {
+        ""
+    };
+    let magnitude = value.unsigned_abs().min(u64::MAX as u128) as u64;
+    format!("{sign}{}", format_size(magnitude))
+}
 
 fn configure_component_theme(cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
@@ -3106,6 +3303,18 @@ fn open_workspace_from_menu(_: &OpenWorkspace, cx: &mut App) {
     }
 }
 
+fn compare_artifacts_from_menu(_: &CompareArtifacts, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| this.choose_comparison(false, cx));
+    }
+}
+
+fn compare_folders_from_menu(_: &CompareFolders, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| this.choose_comparison(true, cx));
+    }
+}
+
 fn save_workspace_from_menu(_: &SaveWorkspace, cx: &mut App) {
     if let Some(view) = active_bytetrawl_view(cx) {
         view.update(cx, |this, cx| this.save_workspace(cx));
@@ -3192,6 +3401,9 @@ fn install_menus(cx: &mut App) {
                 recent_menu,
                 MenuItem::action("Open Workspace…", OpenWorkspace),
                 MenuItem::separator(),
+                MenuItem::action("Compare Artifacts…", CompareArtifacts),
+                MenuItem::action("Compare Folders…", CompareFolders),
+                MenuItem::separator(),
                 MenuItem::action("Save Workspace…", SaveWorkspace),
             ],
         },
@@ -3263,6 +3475,8 @@ fn main() {
         cx.on_action(open_file_from_menu);
         cx.on_action(open_artifact_from_menu);
         cx.on_action(open_workspace_from_menu);
+        cx.on_action(compare_artifacts_from_menu);
+        cx.on_action(compare_folders_from_menu);
         cx.on_action(save_workspace_from_menu);
         cx.on_action(open_recent_from_menu);
         cx.bind_keys([
@@ -3270,6 +3484,7 @@ fn main() {
             KeyBinding::new("cmd-o", OpenFile, None),
             KeyBinding::new("cmd-shift-o", OpenArtifact, None),
             KeyBinding::new("cmd-alt-o", OpenWorkspace, None),
+            KeyBinding::new("cmd-shift-c", CompareArtifacts, None),
             KeyBinding::new("cmd-s", SaveWorkspace, None),
             KeyBinding::new("cmd-f", FocusSearch, None),
         ]);

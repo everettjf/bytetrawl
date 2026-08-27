@@ -850,6 +850,7 @@ version = "1.0.3"
 dependencies = [
  "anyhow",
  "bytetrawl-analysis",
+ "bytetrawl-compare",
  "bytetrawl-core",
  "bytetrawl-format",
  "bytetrawl-ios",
@@ -914,10 +915,14 @@ dependencies = [
 name = "bytetrawl-compare"
 version = "1.0.3"
 dependencies = [
+ "bytetrawl-analysis",
  "bytetrawl-core",
  "bytetrawl-ios",
+ "hex",
  "indexmap",
  "serde",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]

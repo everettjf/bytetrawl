@@ -323,7 +323,8 @@ pub fn compare(
         &after,
         before_ipa.as_ref(),
         after_ipa.as_ref(),
-    ))
+        cancellation,
+    )?)
 }
 
 fn is_ipa(artifact: &ArtifactNode) -> bool {

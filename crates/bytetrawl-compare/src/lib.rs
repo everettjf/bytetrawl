@@ -1,9 +1,11 @@
 //! Deterministic file, size, and iOS release-audit comparisons.
 
-use bytetrawl_core::{ArtifactNode, ArtifactSource};
+use bytetrawl_analysis::{ArtifactReader, CancellationToken};
+use bytetrawl_core::{ArtifactNode, ArtifactSource, Result};
 use bytetrawl_ios::IpaAuditReportV1;
 use indexmap::{IndexMap, IndexSet};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -43,6 +45,8 @@ pub struct IpaChanges {
     pub targets: SetChanges,
     pub localizations: SetChanges,
     pub privacy_usage_keys: SetChanges,
+    pub privacy_manifest_values: SetChanges,
+    pub signing: Vec<ValueChange>,
     pub entitlements: Vec<ValueChange>,
     pub findings: SetChanges,
 }
@@ -66,11 +70,12 @@ pub fn compare_artifacts(
     after: &ArtifactNode,
     before_ipa: Option<&IpaAuditReportV1>,
     after_ipa: Option<&IpaAuditReportV1>,
-) -> CompareReportV1 {
-    let before_files = file_sizes(before);
-    let after_files = file_sizes(after);
-    let before_bytes = before_files.values().copied().sum();
-    let after_bytes = after_files.values().copied().sum();
+    cancel: &CancellationToken,
+) -> Result<CompareReportV1> {
+    let before_files = file_snapshots(before, cancel)?;
+    let after_files = file_snapshots(after, cancel)?;
+    let before_bytes = before_files.values().map(|file| file.size).sum();
+    let after_bytes = after_files.values().map(|file| file.size).sum();
     let paths = before_files
         .keys()
         .chain(after_files.keys())
@@ -79,8 +84,8 @@ pub fn compare_artifacts(
     let mut files = paths
         .into_iter()
         .filter_map(|path| {
-            let old = before_files.get(&path).copied();
-            let new = after_files.get(&path).copied();
+            let old = before_files.get(&path);
+            let new = after_files.get(&path);
             if old == new {
                 return None;
             }
@@ -91,9 +96,10 @@ pub fn compare_artifacts(
                     _ => ChangeKind::Modified,
                 },
                 path,
-                before_bytes: old,
-                after_bytes: new,
-                delta_bytes: new.unwrap_or(0) as i128 - old.unwrap_or(0) as i128,
+                before_bytes: old.map(|file| file.size),
+                after_bytes: new.map(|file| file.size),
+                delta_bytes: new.map_or(0, |file| file.size) as i128
+                    - old.map_or(0, |file| file.size) as i128,
             })
         })
         .collect::<Vec<_>>();
@@ -105,7 +111,7 @@ pub fn compare_artifacts(
         .collect::<Vec<_>>();
     largest_growth.sort_by(|left, right| right.delta_bytes.cmp(&left.delta_bytes));
     largest_growth.truncate(50);
-    CompareReportV1 {
+    Ok(CompareReportV1 {
         schema_version: "1.0".into(),
         generator: format!("ByteTrawl/{}", env!("CARGO_PKG_VERSION")),
         before: before.path.clone(),
@@ -118,13 +124,46 @@ pub fn compare_artifacts(
         ipa: before_ipa
             .zip(after_ipa)
             .map(|(before, after)| compare_ipa(before, after)),
-    }
+    })
 }
 
-fn file_sizes(root: &ArtifactNode) -> IndexMap<PathBuf, u64> {
-    root.files()
-        .filter_map(|node| logical_path(root, node).map(|path| (path, node.size)))
-        .collect()
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileSnapshot {
+    size: u64,
+    sha256: String,
+}
+
+fn file_snapshots(
+    root: &ArtifactNode,
+    cancel: &CancellationToken,
+) -> Result<IndexMap<PathBuf, FileSnapshot>> {
+    let mut snapshots = IndexMap::new();
+    for node in root.files() {
+        cancel.check()?;
+        let Some(path) = logical_path(root, node) else {
+            continue;
+        };
+        let reader = ArtifactReader::open(node)?;
+        let mut hasher = Sha256::new();
+        let mut offset = 0u64;
+        while offset < reader.len() {
+            cancel.check()?;
+            let bytes = reader.read_range(offset, 1024 * 1024)?;
+            if bytes.is_empty() {
+                break;
+            }
+            hasher.update(&bytes);
+            offset = offset.saturating_add(bytes.len() as u64);
+        }
+        snapshots.insert(
+            path,
+            FileSnapshot {
+                size: reader.len(),
+                sha256: hex::encode(hasher.finalize()),
+            },
+        );
+    }
+    Ok(snapshots)
 }
 
 fn logical_path(root: &ArtifactNode, node: &ArtifactNode) -> Option<PathBuf> {
@@ -219,6 +258,46 @@ fn compare_ipa(before: &IpaAuditReportV1, after: &IpaAuditReportV1) -> IpaChange
             )
         })
         .collect();
+    let signing = [
+        value_change(
+            "team_identifier",
+            before
+                .signing
+                .as_ref()
+                .and_then(|value| value.team_id.clone()),
+            after
+                .signing
+                .as_ref()
+                .and_then(|value| value.team_id.clone()),
+        ),
+        value_change(
+            "application_identifier",
+            before
+                .signing
+                .as_ref()
+                .and_then(|value| value.application_identifier.clone()),
+            after
+                .signing
+                .as_ref()
+                .and_then(|value| value.application_identifier.clone()),
+        ),
+        value_change(
+            "expiration",
+            before
+                .signing
+                .as_ref()
+                .and_then(|value| value.expiration)
+                .map(|value| value.to_rfc3339()),
+            after
+                .signing
+                .as_ref()
+                .and_then(|value| value.expiration)
+                .map(|value| value.to_rfc3339()),
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     IpaChanges {
         identity,
         architectures: set_changes(before.architectures.clone(), after.architectures.clone()),
@@ -237,6 +316,8 @@ fn compare_ipa(before: &IpaAuditReportV1, after: &IpaAuditReportV1) -> IpaChange
             before.privacy_usage_descriptions.keys().cloned(),
             after.privacy_usage_descriptions.keys().cloned(),
         ),
+        privacy_manifest_values: set_changes(privacy_values(before), privacy_values(after)),
+        signing,
         entitlements,
         findings: set_changes(
             before
@@ -248,32 +329,65 @@ fn compare_ipa(before: &IpaAuditReportV1, after: &IpaAuditReportV1) -> IpaChange
     }
 }
 
+fn privacy_values(report: &IpaAuditReportV1) -> Vec<String> {
+    let mut values = Vec::new();
+    for manifest in &report.privacy_manifests {
+        values.push(format!("tracking={}", manifest.tracking));
+        values.extend(
+            manifest
+                .tracking_domains
+                .iter()
+                .map(|value| format!("tracking-domain:{value}")),
+        );
+        values.extend(
+            manifest
+                .collected_data_types
+                .iter()
+                .map(|value| format!("collected-data:{value}")),
+        );
+        for (category, reasons) in &manifest.accessed_api_categories {
+            for reason in reasons {
+                values.push(format!("required-reason:{category}:{reason}"));
+            }
+        }
+    }
+    values
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytetrawl_core::ArtifactKind;
+    use bytetrawl_analysis::open_artifact;
 
     #[test]
     fn reports_added_removed_modified_and_largest_growth() {
-        let mut before =
-            ArtifactNode::new("before", PathBuf::from("/before"), ArtifactKind::Directory);
-        before.children.push(file("a", "/before/a", 10));
-        before.children.push(file("gone", "/before/gone", 5));
-        let mut after =
-            ArtifactNode::new("after", PathBuf::from("/after"), ArtifactKind::Directory);
-        after.children.push(file("a", "/after/a", 30));
-        after.children.push(file("new", "/after/new", 7));
-        let report = compare_artifacts(&before, &after, None, None);
+        let temporary = tempfile::tempdir().expect("create comparison fixture");
+        let before_path = temporary.path().join("before");
+        let after_path = temporary.path().join("after");
+        std::fs::create_dir(&before_path).expect("create baseline");
+        std::fs::create_dir(&after_path).expect("create candidate");
+        std::fs::write(before_path.join("a"), vec![b'a'; 10]).expect("write baseline a");
+        std::fs::write(before_path.join("gone"), vec![b'g'; 5]).expect("write removed file");
+        std::fs::write(after_path.join("a"), vec![b'a'; 30]).expect("write candidate a");
+        std::fs::write(after_path.join("new"), vec![b'n'; 7]).expect("write added file");
+        std::fs::write(before_path.join("same-size"), b"before").expect("write baseline content");
+        std::fs::write(after_path.join("same-size"), b"after!").expect("write candidate content");
+        let cancellation = CancellationToken::default();
+        let before = open_artifact(&before_path, &cancellation).expect("open baseline");
+        let after = open_artifact(&after_path, &cancellation).expect("open candidate");
+        let report = compare_artifacts(&before, &after, None, None, &cancellation)
+            .expect("compare artifacts");
         assert_eq!(report.delta_bytes, 22);
-        assert_eq!(report.files.len(), 3);
+        assert_eq!(report.files.len(), 4);
         assert_eq!(report.largest_growth[0].path, PathBuf::from("a"));
         assert_eq!(report.largest_growth[0].delta_bytes, 20);
-    }
-
-    fn file(name: &str, path: &str, size: u64) -> ArtifactNode {
-        let mut node = ArtifactNode::new(name, PathBuf::from(path), ArtifactKind::Resource);
-        node.size = size;
-        node.source = None;
-        node
+        assert!(
+            report
+                .files
+                .iter()
+                .any(|change| change.path == PathBuf::from("same-size")
+                    && change.kind == ChangeKind::Modified
+                    && change.delta_bytes == 0)
+        );
     }
 }
