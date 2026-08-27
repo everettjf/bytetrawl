@@ -18,6 +18,6 @@ uuid.workspace = true
 indexmap.workspace = true
 
 [[bin]]
-name = "bytetrawl"
+name = "ByteTrawl"
 path = "src/main.rs"
 test = false
