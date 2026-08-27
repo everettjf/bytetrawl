@@ -13,7 +13,9 @@ use bytetrawl_core::{
 use bytetrawl_ios::{IpaAuditReportV1, IpaViewCompatibleReport, audit_ipa, ipa_view_compatible};
 use bytetrawl_policy::{
     PolicyViolation, ReleasePolicyV1, evaluate_android, evaluate_compare, evaluate_ipa,
+    evaluate_windows,
 };
+use bytetrawl_windows::{WindowsPackageReportV1, audit_msix, is_msix};
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use indexmap::IndexMap;
@@ -189,6 +191,8 @@ pub struct InspectionReport {
     pub ipa_view_compatibility: Option<IpaViewCompatibleReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub android: Option<AndroidAuditReportV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub windows_package: Option<WindowsPackageReportV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub policy_violations: Vec<PolicyViolation>,
     pub findings: Vec<ReportFinding>,
@@ -620,6 +624,20 @@ pub fn inspect(
     } else {
         None
     };
+    let windows_package = if is_msix(&artifact) {
+        match audit_msix(&artifact, cancellation) {
+            Ok(report) => Some(report),
+            Err(error) => {
+                run_errors.push(ReportError {
+                    stage: "windows_package_audit",
+                    message: error.to_string(),
+                });
+                None
+            }
+        }
+    } else {
+        None
+    };
     let policy = args.policy.as_deref().map(load_policy).transpose()?;
     let mut policy_violations = Vec::new();
     if let (Some(policy), Some(ipa)) = (policy.as_ref(), ipa.as_ref()) {
@@ -627,6 +645,9 @@ pub fn inspect(
     }
     if let (Some(policy), Some(android)) = (policy.as_ref(), android.as_ref()) {
         policy_violations.extend(evaluate_android(policy, android));
+    }
+    if let (Some(policy), Some(windows)) = (policy.as_ref(), windows_package.as_ref()) {
+        policy_violations.extend(evaluate_windows(policy, windows));
     }
     let partial = !run_errors.is_empty()
         || files.iter().any(|file| !file.errors.is_empty())
@@ -645,6 +666,7 @@ pub fn inspect(
         ipa,
         ipa_view_compatibility,
         android,
+        windows_package,
         policy_violations,
         findings,
         run: RunInfo {
@@ -708,6 +730,15 @@ fn all_report_findings(report: &InspectionReport) -> Vec<(Severity, String, Stri
     }
     if let Some(android) = report.android.as_ref() {
         findings.extend(android.findings.iter().map(|item| {
+            (
+                item.severity,
+                item.title.clone(),
+                item.evidence_path.display().to_string(),
+            )
+        }));
+    }
+    if let Some(windows) = report.windows_package.as_ref() {
+        findings.extend(windows.findings.iter().map(|item| {
             (
                 item.severity,
                 item.title.clone(),
@@ -832,6 +863,12 @@ fn report_reaches_threshold(report: &InspectionReport, threshold: SeverityThresh
         })
         || report.android.as_ref().is_some_and(|android| {
             android
+                .findings
+                .iter()
+                .any(|finding| severity_rank(finding.severity) >= threshold)
+        })
+        || report.windows_package.as_ref().is_some_and(|windows| {
+            windows
                 .findings
                 .iter()
                 .any(|finding| severity_rank(finding.severity) >= threshold)

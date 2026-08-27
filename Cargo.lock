@@ -856,6 +856,7 @@ dependencies = [
  "bytetrawl-format",
  "bytetrawl-ios",
  "bytetrawl-tools",
+ "bytetrawl-windows",
  "gpui",
  "gpui-component",
  "indexmap",
@@ -916,6 +917,7 @@ dependencies = [
  "bytetrawl-core",
  "bytetrawl-ios",
  "bytetrawl-policy",
+ "bytetrawl-windows",
  "chrono",
  "clap",
  "ctrlc",
@@ -993,6 +995,7 @@ dependencies = [
  "bytetrawl-compare",
  "bytetrawl-core",
  "bytetrawl-ios",
+ "bytetrawl-windows",
  "serde",
  "serde_json",
 ]
@@ -1012,6 +1015,19 @@ version = "1.0.3"
 dependencies = [
  "bytetrawl-core",
  "wait-timeout",
+]
+
+[[package]]
+name = "bytetrawl-windows"
+version = "1.0.3"
+dependencies = [
+ "bytetrawl-analysis",
+ "bytetrawl-core",
+ "indexmap",
+ "quick-xml 0.38.4",
+ "serde",
+ "tempfile",
+ "zip",
 ]
 
 [[package]]

@@ -212,6 +212,7 @@ fn populate_zip_members(root: &mut ArtifactNode, cancel: &CancellationToken) -> 
     let mut android_bundle_config_found = false;
     let mut xapk_manifest_found = false;
     let mut nested_apk_found = false;
+    let mut appx_manifest_found = false;
     let mut declared_bytes = 0u64;
     let mut member_paths = HashSet::new();
     for entry_index in 0..archive.len() {
@@ -279,6 +280,7 @@ fn populate_zip_members(root: &mut ArtifactNode, cancel: &CancellationToken) -> 
         android_bundle_config_found |= member_path == Path::new("BundleConfig.pb");
         xapk_manifest_found |= member_path == Path::new("manifest.json");
         nested_apk_found |= member_text.to_ascii_lowercase().ends_with(".apk");
+        appx_manifest_found |= member_path == Path::new("AppxManifest.xml");
         insert_archive_member(root, &member_path, source)?;
     }
     if ipa_info_plist_found {
@@ -289,6 +291,10 @@ fn populate_zip_members(root: &mut ArtifactNode, cancel: &CancellationToken) -> 
             "Inspection Mode".into(),
             "Virtual archive members; ByteTrawl did not extract this IPA.".into(),
         );
+    } else if appx_manifest_found {
+        root.kind = ArtifactKind::Package;
+        root.properties
+            .insert("Package Format".into(), "Windows APPX/MSIX".into());
     } else if android_manifest_found && android_dex_found {
         root.kind = ArtifactKind::Package;
         root.properties

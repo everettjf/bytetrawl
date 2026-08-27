@@ -4,6 +4,7 @@ use bytetrawl_android::AndroidAuditReportV1;
 use bytetrawl_compare::CompareReportV1;
 use bytetrawl_core::Severity;
 use bytetrawl_ios::IpaAuditReportV1;
+use bytetrawl_windows::WindowsPackageReportV1;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -24,6 +25,10 @@ pub struct ReleasePolicyV1 {
     pub max_android_dex_methods: Option<u64>,
     #[serde(default)]
     pub require_android_signature: bool,
+    #[serde(default)]
+    pub forbidden_windows_capabilities: Vec<String>,
+    #[serde(default)]
+    pub require_windows_package_signature: bool,
 }
 
 fn schema_version() -> String {
@@ -184,6 +189,32 @@ pub fn evaluate_android(
             .then(left.message.cmp(&right.message))
     });
     violations.dedup();
+    violations
+}
+
+pub fn evaluate_windows(
+    policy: &ReleasePolicyV1,
+    report: &WindowsPackageReportV1,
+) -> Vec<PolicyViolation> {
+    let mut violations = Vec::new();
+    for capability in &policy.forbidden_windows_capabilities {
+        if report.capabilities.contains(capability)
+            || report.restricted_capabilities.contains(capability)
+        {
+            violations.push(PolicyViolation {
+                rule_id: "policy.forbidden-windows-capability".into(),
+                severity: Severity::High,
+                message: format!("Windows capability {capability} is forbidden"),
+            });
+        }
+    }
+    if policy.require_windows_package_signature && !report.signature_present {
+        violations.push(PolicyViolation {
+            rule_id: "policy.require-windows-package-signature".into(),
+            severity: Severity::High,
+            message: "An APPX/MSIX package signature is required".into(),
+        });
+    }
     violations
 }
 

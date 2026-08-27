@@ -8,6 +8,7 @@ members = [
     "crates/bytetrawl-compare",
     "crates/bytetrawl-policy",
     "crates/bytetrawl-android",
+    "crates/bytetrawl-windows",
     "crates/bytetrawl-signature",
     "crates/bytetrawl-tools",
     "crates/bytetrawl-cli",
