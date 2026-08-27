@@ -16,7 +16,7 @@ use bytetrawl_tools::{ToolAvailability, ToolRegistry};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
-    Disableable, Root, StyledExt, Theme, ThemeMode,
+    Disableable, Root, Sizable, StyledExt, Theme, ThemeMode,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
 };
@@ -242,6 +242,9 @@ impl ByteTrawlApp {
         else {
             return;
         };
+        self.load_workspace(path, cx);
+    }
+    fn load_workspace(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         match Workspace::load(&path) {
             Ok(workspace) => {
                 let artifact_path = workspace.artifact_path.clone();
@@ -252,6 +255,16 @@ impl ByteTrawlApp {
                 self.error = Some(error.to_string().into());
                 cx.notify();
             }
+        }
+    }
+    fn load_dropped_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("bytetrawl-workspace"))
+        {
+            self.load_workspace(path, cx);
+        } else {
+            self.load(path, cx);
         }
     }
     fn load(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -1350,6 +1363,16 @@ impl ByteTrawlApp {
             .flex()
             .flex_col()
             .bg(rgb(BG))
+            .border_2()
+            .border_color(rgb(BG))
+            .drag_over::<ExternalPaths>(|style, _, _, _| {
+                style.bg(rgba(0x9bd26720)).border_color(rgb(GREEN))
+            })
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                if let Some(path) = paths.paths().first() {
+                    this.load_dropped_path(path.clone(), cx);
+                }
+            }))
             .child(
                 div()
                     .id("inspector-tabs-scroll")
@@ -2102,6 +2125,7 @@ impl Render for ByteTrawlApp {
                             .child(
                                 Button::new("open-folder")
                                     .label("Open Artifact")
+                                    .xsmall()
                                     .compact()
                                     .primary()
                                     .on_click(cx.listener(|this, _, _, cx| this.choose(true, cx))),
@@ -2109,12 +2133,14 @@ impl Render for ByteTrawlApp {
                             .child(
                                 Button::new("open-file")
                                     .label("Open File")
+                                    .xsmall()
                                     .compact()
                                     .on_click(cx.listener(|this, _, _, cx| this.choose(false, cx))),
                             )
                             .child(
                                 Button::new("open-workspace")
                                     .label("Open Workspace")
+                                    .xsmall()
                                     .compact()
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.open_workspace(cx)),
@@ -2123,6 +2149,7 @@ impl Render for ByteTrawlApp {
                             .child(
                                 Button::new("save-workspace")
                                     .label("Save")
+                                    .xsmall()
                                     .compact()
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.save_workspace(cx)),
@@ -2141,6 +2168,7 @@ impl Render for ByteTrawlApp {
                                     .child(
                                         Button::new("cancel-task")
                                             .label("Cancel")
+                                            .xsmall()
                                             .compact()
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.cancel_current_task(cx)
@@ -2168,6 +2196,7 @@ impl Render for ByteTrawlApp {
                             .child(
                                 Button::new("search-all")
                                     .label("Search Artifact")
+                                    .xsmall()
                                     .compact()
                                     .on_click(cx.listener(|this, _, _, cx| this.search_all(cx))),
                             )
@@ -2178,6 +2207,7 @@ impl Render for ByteTrawlApp {
                                     } else {
                                         "Text"
                                     })
+                                    .xsmall()
                                     .compact()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.file_search_mode = FileSearchMode::Text;
@@ -2191,6 +2221,7 @@ impl Render for ByteTrawlApp {
                                     } else {
                                         "Bytes"
                                     })
+                                    .xsmall()
                                     .compact()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.file_search_mode = FileSearchMode::Bytes;
@@ -2200,12 +2231,14 @@ impl Render for ByteTrawlApp {
                             .child(
                                 Button::new("find-next")
                                     .label("Find Next")
+                                    .xsmall()
                                     .compact()
                                     .on_click(cx.listener(|this, _, _, cx| this.find_next(cx))),
                             )
                             .child(
                                 Button::new("jump-offset")
                                     .label("Jump Offset")
+                                    .xsmall()
                                     .compact()
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.jump_to_offset(cx)),
@@ -2214,6 +2247,7 @@ impl Render for ByteTrawlApp {
                             .child(
                                 Button::new("copy-hex")
                                     .label("Copy Hex")
+                                    .xsmall()
                                     .compact()
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.copy_hex_chunk(cx)),
@@ -2483,10 +2517,23 @@ fn empty_state() -> impl IntoElement {
     div()
         .size_full()
         .flex()
+        .flex_col()
         .items_center()
         .justify_center()
+        .gap_2()
         .text_color(rgb(MUTED))
-        .child("Open an application, directory, package, or binary to begin static inspection.")
+        .child(
+            div()
+                .text_base()
+                .font_medium()
+                .text_color(rgb(TEXT))
+                .child("Drop a file or folder here to inspect"),
+        )
+        .child(
+            div()
+                .text_sm()
+                .child("Applications, packages, binaries, and ByteTrawl workspaces are supported"),
+        )
 }
 fn fmt_addr(v: u64) -> String {
     format!("0x{v:016x}")
