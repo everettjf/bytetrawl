@@ -858,6 +858,7 @@ dependencies = [
  "gpui-component",
  "indexmap",
  "rfd",
+ "serde_json",
  "uuid",
 ]
 

@@ -48,6 +48,12 @@ actions!(
     ]
 );
 
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = bytetrawl, no_json)]
+struct OpenRecent {
+    path: PathBuf,
+}
+
 #[derive(Default)]
 struct WindowViews(std::collections::HashMap<WindowId, WeakEntity<ByteTrawlApp>>);
 
@@ -69,6 +75,11 @@ fn take_startup_path() -> Option<PathBuf> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum InspectorTab {
     Search,
+    IpaSummary,
+    IpaTargets,
+    IpaPrivacy,
+    IpaSigning,
+    IpaFindings,
     Slices,
     Overview,
     Headers,
@@ -91,6 +102,11 @@ impl InspectorTab {
     fn label(self) -> &'static str {
         match self {
             Self::Search => "Search",
+            Self::IpaSummary => "Summary",
+            Self::IpaTargets => "Targets",
+            Self::IpaPrivacy => "Privacy",
+            Self::IpaSigning => "Signing",
+            Self::IpaFindings => "Findings",
             Self::Slices => "Slices",
             Self::Overview => "Overview",
             Self::Headers => "Headers",
@@ -112,6 +128,11 @@ impl InspectorTab {
     fn from_label(label: &str) -> Option<Self> {
         [
             Self::Search,
+            Self::IpaSummary,
+            Self::IpaTargets,
+            Self::IpaPrivacy,
+            Self::IpaSigning,
+            Self::IpaFindings,
             Self::Slices,
             Self::Overview,
             Self::Headers,
@@ -340,6 +361,7 @@ impl ByteTrawlApp {
                 this.loading = false;
                 match result {
                     Ok((root, metadata, ipa_report)) => {
+                        let opened_path = root.path.clone();
                         this.expanded_nodes.clear();
                         this.expanded_nodes.insert(root.id);
                         this.expanded_nodes.extend(
@@ -386,6 +408,16 @@ impl ByteTrawlApp {
                         this.dependency_graph = Arc::default();
                         this.dependency_graph_loaded = false;
                         this.status = "Artifact ready".into();
+                        if let Err(error) = record_recent_artifact(&opened_path) {
+                            this.error =
+                                Some(format!("Could not update recent artifacts: {error}").into());
+                        }
+                        install_menus(cx);
+                        if this.ipa_report.is_some()
+                            && id == this.artifact.as_ref().map_or(id, |root| root.id)
+                        {
+                            this.tab = InspectorTab::IpaSummary;
+                        }
                         let should_analyze = this
                             .artifact
                             .as_ref()
@@ -952,6 +984,23 @@ impl ByteTrawlApp {
         if !self.search_hits.is_empty() || self.tab == InspectorTab::Search {
             tabs.push(InspectorTab::Search);
         }
+        let ipa_root_selected = self.ipa_report.is_some()
+            && self.selected_node().is_some_and(|node| {
+                self.artifact
+                    .as_ref()
+                    .is_some_and(|artifact| artifact.id == node.id)
+            });
+        if ipa_root_selected {
+            tabs.extend([
+                InspectorTab::IpaSummary,
+                InspectorTab::IpaTargets,
+                InspectorTab::IpaPrivacy,
+                InspectorTab::IpaSigning,
+                InspectorTab::IpaFindings,
+                InspectorTab::DependencyGraph,
+            ]);
+            return tabs;
+        }
         tabs.push(InspectorTab::Overview);
         if self.artifact.is_some() {
             tabs.push(InspectorTab::DependencyGraph);
@@ -1508,6 +1557,11 @@ impl ByteTrawlApp {
         };
         match self.tab {
             InspectorTab::Search => self.render_search(cx).into_any_element(),
+            InspectorTab::IpaSummary => self.render_ipa_summary().into_any_element(),
+            InspectorTab::IpaTargets => self.render_ipa_targets(cx).into_any_element(),
+            InspectorTab::IpaPrivacy => self.render_ipa_privacy().into_any_element(),
+            InspectorTab::IpaSigning => self.render_ipa_signing().into_any_element(),
+            InspectorTab::IpaFindings => self.render_ipa_findings(cx).into_any_element(),
             InspectorTab::Slices => self.render_slices(cx).into_any_element(),
             InspectorTab::Overview => self.render_overview(node).into_any_element(),
             InspectorTab::Headers => kv_panel(
@@ -1946,6 +2000,216 @@ impl ByteTrawlApp {
             })
             .unwrap_or_else(|| vec![("Status".into(), "No host signature result".into())]);
         kv_panel("Digital Signature", values)
+    }
+    fn render_ipa_summary(&self) -> impl IntoElement {
+        let Some(report) = self.ipa_report.as_deref() else {
+            return empty_state().into_any_element();
+        };
+        let mut values = vec![
+            (
+                "Application".into(),
+                report.metadata.name.clone().unwrap_or_else(|| "—".into()),
+            ),
+            (
+                "Bundle ID".into(),
+                report
+                    .metadata
+                    .bundle_identifier
+                    .clone()
+                    .unwrap_or_else(|| "—".into()),
+            ),
+            (
+                "Version / Build".into(),
+                format!(
+                    "{} / {}",
+                    report.metadata.version.as_deref().unwrap_or("—"),
+                    report.metadata.build.as_deref().unwrap_or("—")
+                ),
+            ),
+            (
+                "Minimum iOS".into(),
+                report
+                    .metadata
+                    .minimum_os_version
+                    .clone()
+                    .unwrap_or_else(|| "—".into()),
+            ),
+            ("Architectures".into(), report.architectures.join(", ")),
+            ("Installed size".into(), format_size(report.total_bytes)),
+            (
+                "Compressed members".into(),
+                format_size(report.compressed_bytes),
+            ),
+            ("Files".into(), report.files.len().to_string()),
+            ("Embedded targets".into(), report.targets.len().to_string()),
+            (
+                "Privacy manifest".into(),
+                if report.has_privacy_manifest {
+                    "Present"
+                } else {
+                    "Missing"
+                }
+                .into(),
+            ),
+            ("Findings".into(), report.findings.len().to_string()),
+            (
+                "Report state".into(),
+                if report.partial {
+                    "Partial"
+                } else {
+                    "Complete"
+                }
+                .into(),
+            ),
+            ("Input SHA-256".into(), report.source.sha256.clone()),
+        ];
+        if !report.errors.is_empty() {
+            values.push(("Partial errors".into(), report.errors.join(" · ")));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(
+                div()
+                    .text_2xl()
+                    .font_semibold()
+                    .text_color(rgb(TEXT))
+                    .child("iOS Release Audit"),
+            )
+            .child(kv_panel("Application", values))
+            .into_any_element()
+    }
+    fn render_ipa_targets(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let rows = self
+            .ipa_report
+            .as_deref()
+            .map(|report| {
+                report
+                    .targets
+                    .iter()
+                    .map(|target| {
+                        vec![
+                            target.kind.clone(),
+                            target
+                                .metadata
+                                .bundle_identifier
+                                .clone()
+                                .unwrap_or_default(),
+                            target.architectures.join(", "),
+                            if target.has_privacy_manifest {
+                                "Yes"
+                            } else {
+                                "No"
+                            }
+                            .into(),
+                            target.path.display().to_string(),
+                        ]
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        table_panel(
+            "Embedded Targets",
+            &["Kind", "Bundle ID", "Architectures", "Privacy", "Path"],
+            rows,
+            cx,
+        )
+    }
+    fn render_ipa_privacy(&self) -> impl IntoElement {
+        let Some(report) = self.ipa_report.as_deref() else {
+            return empty_state().into_any_element();
+        };
+        let mut values = vec![(
+            "App PrivacyInfo.xcprivacy".into(),
+            if report.has_privacy_manifest {
+                "Present"
+            } else {
+                "Missing"
+            }
+            .into(),
+        )];
+        values.extend(
+            report
+                .privacy_usage_descriptions
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+        kv_panel("Privacy Declarations", values).into_any_element()
+    }
+    fn render_ipa_signing(&self) -> impl IntoElement {
+        let Some(report) = self.ipa_report.as_deref() else {
+            return empty_state().into_any_element();
+        };
+        let Some(signing) = report.signing.as_ref() else {
+            return kv_panel(
+                "Provisioning",
+                vec![(
+                    "Status".into(),
+                    "embedded.mobileprovision is missing".into(),
+                )],
+            )
+            .into_any_element();
+        };
+        let mut values = vec![
+            (
+                "Team ID".into(),
+                signing.team_id.clone().unwrap_or_else(|| "—".into()),
+            ),
+            (
+                "Application ID".into(),
+                signing
+                    .application_identifier
+                    .clone()
+                    .unwrap_or_else(|| "—".into()),
+            ),
+            (
+                "Expiration".into(),
+                signing
+                    .expiration
+                    .map(|value| value.to_rfc3339())
+                    .unwrap_or_else(|| "—".into()),
+            ),
+        ];
+        values.extend(
+            signing
+                .entitlements
+                .iter()
+                .map(|(key, value)| (format!("Entitlement · {key}"), value.clone())),
+        );
+        kv_panel("Provisioning & Entitlements", values).into_any_element()
+    }
+    fn render_ipa_findings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let rows = self
+            .ipa_report
+            .as_deref()
+            .map(|report| {
+                report
+                    .findings
+                    .iter()
+                    .map(|finding| {
+                        vec![
+                            format!("{:?}", finding.severity),
+                            finding.rule_id.clone(),
+                            finding.title.clone(),
+                            finding.description.clone(),
+                            finding
+                                .evidence
+                                .iter()
+                                .map(|item| item.path.display().to_string())
+                                .collect::<Vec<_>>()
+                                .join(" · "),
+                        ]
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        table_panel(
+            "IPA Release Findings",
+            &["Severity", "Rule", "Finding", "Description", "Evidence"],
+            rows,
+            cx,
+        )
     }
     fn render_overview(&self, node: &ArtifactNode) -> impl IntoElement {
         let a = self.current_analysis();
@@ -2741,6 +3005,112 @@ fn save_workspace_from_menu(_: &SaveWorkspace, cx: &mut App) {
     }
 }
 
+fn open_recent_from_menu(action: &OpenRecent, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        let path = action.path.clone();
+        view.update(cx, |this, cx| {
+            if path.exists() {
+                this.load(path, cx);
+            } else {
+                this.error = Some("The recent artifact no longer exists.".into());
+                cx.notify();
+            }
+        });
+    }
+}
+
+fn recent_artifacts_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join("Library/Application Support/ByteTrawl/recent-artifacts.json"))
+}
+
+fn recent_artifacts() -> Vec<PathBuf> {
+    let Some(path) = recent_artifacts_path() else {
+        return Vec::new();
+    };
+    std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Vec<PathBuf>>(&bytes).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .take(10)
+        .collect()
+}
+
+fn record_recent_artifact(path: &std::path::Path) -> std::io::Result<()> {
+    let Some(destination) = recent_artifacts_path() else {
+        return Ok(());
+    };
+    let mut paths = recent_artifacts();
+    paths.retain(|recent| recent != path);
+    paths.insert(0, path.to_path_buf());
+    paths.truncate(10);
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec(&paths).map_err(std::io::Error::other)?;
+    let temporary = destination.with_extension("json.tmp");
+    std::fs::write(&temporary, bytes)?;
+    std::fs::rename(temporary, destination)
+}
+
+fn install_menus(cx: &mut App) {
+    let recent_items = recent_artifacts()
+        .into_iter()
+        .map(|path| {
+            let label = path.display().to_string();
+            MenuItem::action(label, OpenRecent { path })
+        })
+        .collect::<Vec<_>>();
+    let recent_menu = MenuItem::submenu(Menu {
+        name: "Open Recent".into(),
+        items: recent_items,
+    });
+    cx.set_menus(vec![
+        Menu {
+            name: "ByteTrawl".into(),
+            items: vec![
+                MenuItem::os_submenu("Services", SystemMenuType::Services),
+                MenuItem::separator(),
+                MenuItem::action("Quit ByteTrawl", Quit),
+            ],
+        },
+        Menu {
+            name: "File".into(),
+            items: vec![
+                MenuItem::action("New Window", NewWindow),
+                MenuItem::separator(),
+                MenuItem::action("Open File…", OpenFile),
+                MenuItem::action("Open Folder…", OpenArtifact),
+                recent_menu,
+                MenuItem::action("Open Workspace…", OpenWorkspace),
+                MenuItem::separator(),
+                MenuItem::action("Save Workspace…", SaveWorkspace),
+            ],
+        },
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::os_action("Undo", Undo, OsAction::Undo),
+                MenuItem::os_action("Redo", Redo, OsAction::Redo),
+                MenuItem::separator(),
+                MenuItem::os_action("Cut", Cut, OsAction::Cut),
+                MenuItem::os_action("Copy", Copy, OsAction::Copy),
+                MenuItem::os_action("Paste", Paste, OsAction::Paste),
+                MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+            ],
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![MenuItem::action("Focus Search", FocusSearch)],
+        },
+        Menu {
+            name: "Window".into(),
+            items: vec![],
+        },
+    ]);
+}
+
 fn open_bytetrawl_window(cx: &mut App) {
     cx.spawn(async move |cx| {
         cx.open_window(
@@ -2787,6 +3157,7 @@ fn main() {
         cx.on_action(open_artifact_from_menu);
         cx.on_action(open_workspace_from_menu);
         cx.on_action(save_workspace_from_menu);
+        cx.on_action(open_recent_from_menu);
         cx.bind_keys([
             KeyBinding::new("cmd-n", NewWindow, None),
             KeyBinding::new("cmd-o", OpenFile, None),
@@ -2795,48 +3166,7 @@ fn main() {
             KeyBinding::new("cmd-s", SaveWorkspace, None),
             KeyBinding::new("cmd-f", FocusSearch, None),
         ]);
-        cx.set_menus(vec![
-            Menu {
-                name: "ByteTrawl".into(),
-                items: vec![
-                    MenuItem::os_submenu("Services", SystemMenuType::Services),
-                    MenuItem::separator(),
-                    MenuItem::action("Quit ByteTrawl", Quit),
-                ],
-            },
-            Menu {
-                name: "File".into(),
-                items: vec![
-                    MenuItem::action("New Window", NewWindow),
-                    MenuItem::separator(),
-                    MenuItem::action("Open File…", OpenFile),
-                    MenuItem::action("Open Folder…", OpenArtifact),
-                    MenuItem::action("Open Workspace…", OpenWorkspace),
-                    MenuItem::separator(),
-                    MenuItem::action("Save Workspace…", SaveWorkspace),
-                ],
-            },
-            Menu {
-                name: "Edit".into(),
-                items: vec![
-                    MenuItem::os_action("Undo", Undo, OsAction::Undo),
-                    MenuItem::os_action("Redo", Redo, OsAction::Redo),
-                    MenuItem::separator(),
-                    MenuItem::os_action("Cut", Cut, OsAction::Cut),
-                    MenuItem::os_action("Copy", Copy, OsAction::Copy),
-                    MenuItem::os_action("Paste", Paste, OsAction::Paste),
-                    MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
-                ],
-            },
-            Menu {
-                name: "View".into(),
-                items: vec![MenuItem::action("Focus Search", FocusSearch)],
-            },
-            Menu {
-                name: "Window".into(),
-                items: vec![],
-            },
-        ]);
+        install_menus(cx);
         open_bytetrawl_window(cx);
     })
 }
