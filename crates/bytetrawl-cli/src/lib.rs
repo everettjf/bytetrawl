@@ -4,6 +4,7 @@ use bytetrawl_analysis::{
     extract_strings_node_cancellable, hash_node, inspect_metadata, inspect_signature_cancellable,
     open_artifact, resolve_dependencies,
 };
+use bytetrawl_compare::{CompareReportV1, compare_artifacts};
 use bytetrawl_core::{
     ArtifactKind, ArtifactNode, BinaryAnalysis, DependencyGraph, FileSummary, Finding, Severity,
     SignatureInfo,
@@ -36,6 +37,25 @@ pub struct Cli {
 enum Command {
     /// Inspect a file, application, package, or directory and emit JSON.
     Inspect(InspectArgs),
+    /// Compare two artifacts and emit deterministic file, size, and IPA semantic differences.
+    Compare(CompareArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct CompareArgs {
+    /// Baseline artifact path.
+    pub before: PathBuf,
+    /// Candidate artifact path.
+    pub after: PathBuf,
+    /// Write JSON to this file instead of stdout.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+    /// Pretty-print JSON output.
+    #[arg(long)]
+    pub pretty: bool,
+    /// Exit with status 2 when installed-size growth exceeds this many bytes.
+    #[arg(long)]
+    pub max_growth_bytes: Option<i128>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -202,7 +222,55 @@ pub fn run() -> u8 {
     let cli = Cli::parse();
     match cli.command {
         Command::Inspect(args) => run_inspect(args),
+        Command::Compare(args) => run_compare(args),
     }
+}
+
+fn run_compare(args: CompareArgs) -> u8 {
+    let cancellation = CancellationToken::default();
+    match compare(&args, &cancellation) {
+        Ok(report) => {
+            let failed = args
+                .max_growth_bytes
+                .is_some_and(|maximum| report.delta_bytes > maximum);
+            if let Err(error) = write_json(&report, args.output.as_deref(), args.pretty) {
+                eprintln!("bytetrawl-cli: {error}");
+                return 1;
+            }
+            if failed { 2 } else { 0 }
+        }
+        Err(error) => {
+            eprintln!("bytetrawl-cli: {error}");
+            1
+        }
+    }
+}
+
+pub fn compare(
+    args: &CompareArgs,
+    cancellation: &CancellationToken,
+) -> bytetrawl_core::Result<CompareReportV1> {
+    let before = open_artifact(&args.before, cancellation)?;
+    let after = open_artifact(&args.after, cancellation)?;
+    let before_ipa = is_ipa(&before)
+        .then(|| audit_ipa(&before, cancellation))
+        .transpose()?;
+    let after_ipa = is_ipa(&after)
+        .then(|| audit_ipa(&after, cancellation))
+        .transpose()?;
+    Ok(compare_artifacts(
+        &before,
+        &after,
+        before_ipa.as_ref(),
+        after_ipa.as_ref(),
+    ))
+}
+
+fn is_ipa(artifact: &ArtifactNode) -> bool {
+    artifact
+        .properties
+        .get("Package Format")
+        .is_some_and(|format| format == "Apple iOS IPA")
 }
 
 fn run_inspect(args: InspectArgs) -> u8 {
@@ -494,6 +562,10 @@ pub fn inspect(
 }
 
 fn write_report(report: &InspectionReport, output: Option<&Path>, pretty: bool) -> io::Result<()> {
+    write_json(report, output, pretty)
+}
+
+fn write_json(report: &impl Serialize, output: Option<&Path>, pretty: bool) -> io::Result<()> {
     match output {
         Some(path) => {
             let parent = path

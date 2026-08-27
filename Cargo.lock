@@ -896,6 +896,7 @@ name = "bytetrawl-cli"
 version = "1.0.3"
 dependencies = [
  "bytetrawl-analysis",
+ "bytetrawl-compare",
  "bytetrawl-core",
  "bytetrawl-ios",
  "chrono",
@@ -906,6 +907,16 @@ dependencies = [
  "serde_json",
  "tempfile",
  "uuid",
+]
+
+[[package]]
+name = "bytetrawl-compare"
+version = "1.0.3"
+dependencies = [
+ "bytetrawl-core",
+ "bytetrawl-ios",
+ "indexmap",
+ "serde",
 ]
 
 [[package]]

@@ -1,0 +1,11 @@
+[package]
+name = "bytetrawl-compare"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytetrawl-core = { path = "../bytetrawl-core" }
+bytetrawl-ios = { path = "../bytetrawl-ios" }
+serde.workspace = true
+indexmap.workspace = true
