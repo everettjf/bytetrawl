@@ -1,6 +1,35 @@
-# ByteTrawl
+# ByteTrawl 1.0.0
+
+[![Version](https://img.shields.io/badge/version-1.0.0-9acf68?style=flat-square)](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.0.0)
+[![macOS](https://img.shields.io/badge/macOS-13%2B-d69b51?style=flat-square)](#requirements)
+[![License](https://img.shields.io/badge/license-Apache--2.0-d7d3c6?style=flat-square)](LICENSE)
 
 ByteTrawl is a cross-platform, static application and binary inspection workbench written in Rust. It treats applications, directories, packages, and individual files as logical Artifacts, then presents their structure and PE, Mach-O, or ELF details through one host-independent analysis model.
+
+**Current release:** [ByteTrawl 1.0.0](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.0.0) for Apple silicon Macs.
+
+## Install with Homebrew
+
+```sh
+brew tap everettjf/tap
+brew install --cask bytetrawl
+brew install bytetrawl-cli
+```
+
+Verify the CLI installation:
+
+```sh
+bytetrawl-cli --version
+# bytetrawl-cli 1.0.0
+```
+
+The 1.0.0 app bundle is ad-hoc signed. It has been structurally verified with `codesign`, but it is not notarized with an Apple Developer ID. macOS may therefore ask for confirmation the first time it is opened.
+
+## Requirements
+
+- Apple silicon Mac (`arm64`)
+- macOS 13 Ventura or later
+- Homebrew for the installation commands above
 
 The current release target is macOS. The core does not depend on GPUI and can statically inspect Windows PE and Linux ELF binaries on macOS; host-specific Windows and Linux packaging and UI validation will follow separately.
 
@@ -19,7 +48,7 @@ sh scripts/build-macos-app.sh
 open dist/ByteTrawl.app
 ```
 
-Use **Open Artifact** for an application bundle or directory, and **Open File** for a package, executable, library, metadata file, or other binary.
+Use **File → Open Folder** for an application bundle or directory, and **File → Open File** for a package, executable, library, metadata file, or other binary. Files and folders can also be dragged directly into the center of the window.
 
 ## CLI
 
@@ -35,13 +64,15 @@ Expensive work is opt-in. `--depth standard` performs structural analysis; `--de
 
 Exit codes are `0` for a complete report, `1` for a fatal error, `2` when `--fail-on` reaches the requested finding severity, `4` when cancelled, and `5` for a usable but partial report. Output files are written atomically.
 
-Install released builds from the project tap:
+Release binaries and Homebrew metadata are hosted in the public [homebrew-tap release](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.0.0), while the source repository remains private.
 
-```sh
-brew tap everettjf/tap
-brew install bytetrawl-cli
-brew install --cask bytetrawl
-```
+## Desktop workflow
+
+- Native macOS menus for opening files, folders, and workspaces, saving workspaces, editing text, and focusing search.
+- `File → New Window` creates an independent inspection session; the native Window menu tracks open windows.
+- Drag a file, application, package, workspace, or directory into the center to open it.
+- Resizable Artifact Tree, inspector, and Details regions with virtualized tables for large inputs.
+- Workspaces preserve the artifact path, selected view, bookmarks, notes, and cached analysis results.
 
 ## Implemented inspection workflow
 
@@ -61,7 +92,11 @@ brew install --cask bytetrawl
 - Workspaces preserve the Artifact path, selected node/view, bookmarks, notes, and tool configuration model.
 - External tools are detected through `ToolRegistry`, launched only by explicit action, and bounded command output is captured in the Details pane where supported. Captured runs are cancellable, stop after 60 seconds, cap each output stream at 16 MiB, and terminate the child process on timeout.
 
-Keyboard shortcuts on macOS: `⌘O` opens a file, `⇧⌘O` opens an Artifact directory, `⌘S` saves a workspace, and `⌘F` focuses global search.
+Keyboard shortcuts on macOS: `⌘N` opens a new window, `⌘O` opens a file, `⇧⌘O` opens a folder, `⌥⌘O` opens a workspace, `⌘S` saves a workspace, and `⌘F` focuses global search.
+
+## Release verification
+
+ByteTrawl 1.0.0 was validated with the complete Rust workspace test suite, Homebrew strict Formula and Cask audits, a real Homebrew installation of both artifacts, the Formula test, archive integrity checks, arm64 binary inspection, version checks, and strict `codesign` structural verification.
 
 ## Safety
 
