@@ -1,0 +1,13 @@
+[package]
+name = "bytetrawl-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+indexmap.workspace = true
+serde_json.workspace = true

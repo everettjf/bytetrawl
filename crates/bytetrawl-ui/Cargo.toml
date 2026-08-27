@@ -1,0 +1,23 @@
+[package]
+name = "bytetrawl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform application and binary inspection workbench"
+
+[dependencies]
+anyhow.workspace = true
+bytetrawl-core = { path = "../bytetrawl-core" }
+bytetrawl-format = { path = "../bytetrawl-format" }
+bytetrawl-analysis = { path = "../bytetrawl-analysis" }
+bytetrawl-tools = { path = "../bytetrawl-tools" }
+gpui.workspace = true
+gpui-component.workspace = true
+rfd.workspace = true
+uuid.workspace = true
+indexmap.workspace = true
+
+[[bin]]
+name = "bytetrawl"
+path = "src/main.rs"
+test = false

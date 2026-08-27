@@ -1,0 +1,9 @@
+[package]
+name = "bytetrawl-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytetrawl-core = { path = "../bytetrawl-core" }
+wait-timeout.workspace = true

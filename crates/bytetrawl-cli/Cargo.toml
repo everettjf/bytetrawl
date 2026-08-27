@@ -1,0 +1,21 @@
+[package]
+name = "bytetrawl-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytetrawl-core = { path = "../bytetrawl-core" }
+bytetrawl-analysis = { path = "../bytetrawl-analysis" }
+clap.workspace = true
+ctrlc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+indexmap.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
+
+[[bin]]
+name = "bytetrawl-cli"
+path = "src/main.rs"
