@@ -1412,9 +1412,19 @@ impl ByteTrawlApp {
                 div()
                     .id("inspector-scroll")
                     .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
                     .overflow_y_scroll()
                     .p_5()
-                    .child(self.render_tab(cx)),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .child(self.render_tab(cx)),
+                    ),
             )
     }
     fn render_tab(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2350,9 +2360,10 @@ fn table_panel(
     let total = rows.len();
     let truncated = total > MAX_RENDERED_ROWS;
     let visible_count = total.min(MAX_RENDERED_ROWS);
-    let list_height = px(((visible_count.max(1) as f32) * 32.).clamp(96., 640.));
     let list_rows = Arc::new(rows);
     div()
+        .flex_1()
+        .min_h(px(160.))
         .flex()
         .flex_col()
         .gap_3()
@@ -2369,6 +2380,10 @@ fn table_panel(
         })
         .child(
             div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
                 .rounded_md()
                 .border_1()
                 .border_color(rgb(BORDER))
@@ -2419,7 +2434,8 @@ fn table_panel(
                                 .collect::<Vec<_>>()
                         }),
                     )
-                    .h(list_height),
+                    .flex_1()
+                    .min_h(px(96.)),
                 ),
         )
 }
