@@ -1,12 +1,12 @@
-# ByteTrawl 1.0.1
+# ByteTrawl 1.0.2
 
-[![Version](https://img.shields.io/badge/version-1.0.1-9acf68?style=flat-square)](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.0.1)
+[![Version](https://img.shields.io/badge/version-1.0.2-9acf68?style=flat-square)](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.0.2)
 [![macOS](https://img.shields.io/badge/macOS-13%2B-d69b51?style=flat-square)](#requirements)
 [![License](https://img.shields.io/badge/license-Apache--2.0-d7d3c6?style=flat-square)](LICENSE)
 
 ByteTrawl is a cross-platform, static application and binary inspection workbench written in Rust. It treats applications, directories, packages, and individual files as logical Artifacts, then presents their structure and PE, Mach-O, or ELF details through one host-independent analysis model.
 
-**Current release:** [ByteTrawl 1.0.1](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.0.1) for Apple silicon Macs.
+**Current release:** [ByteTrawl 1.0.2](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.0.2) for Apple silicon Macs.
 
 ## Screenshots
 
@@ -26,10 +26,10 @@ Verify the CLI installation:
 
 ```sh
 bytetrawl-cli --version
-# bytetrawl-cli 1.0.1
+# bytetrawl-cli 1.0.2
 ```
 
-The 1.0.1 app bundle is ad-hoc signed. It has been structurally verified with `codesign`, but it is not notarized with an Apple Developer ID. macOS may therefore ask for confirmation the first time it is opened.
+The 1.0.2 app bundle is Developer ID signed and structurally verified with `codesign`, but it is not notarized. macOS may therefore ask for confirmation the first time it is opened.
 
 ## Requirements
 
@@ -70,7 +70,7 @@ Expensive work is opt-in. `--depth standard` performs structural analysis; `--de
 
 Exit codes are `0` for a complete report, `1` for a fatal error, `2` when `--fail-on` reaches the requested finding severity, `4` when cancelled, and `5` for a usable but partial report. Output files are written atomically.
 
-Release binaries and Homebrew metadata are hosted in the public [homebrew-tap release](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.0.1), while the source repository remains private.
+Release binaries and Homebrew metadata are hosted in the public [homebrew-tap release](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.0.2), while the source repository remains private.
 
 ## Desktop workflow
 
@@ -103,7 +103,7 @@ Keyboard shortcuts on macOS: `⌘N` opens a new window, `⌘O` opens a file, `�
 
 ## Release verification
 
-ByteTrawl 1.0.1 was validated with the complete Rust workspace test suite, Homebrew strict Formula and Cask audits, a real Homebrew installation of both artifacts, the Formula test, archive integrity checks, arm64 binary inspection, version checks, and strict `codesign` structural verification.
+ByteTrawl 1.0.2 was validated with the complete Rust workspace test suite, Homebrew strict Formula and Cask audits, a real Homebrew installation of both artifacts, the Formula test, archive integrity checks, arm64 binary inspection, version checks, and strict `codesign` structural verification.
 
 ## Safety
 

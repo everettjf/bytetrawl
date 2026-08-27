@@ -1,8 +1,8 @@
 class BytetrawlCli < Formula
   desc "Static application, package, and binary inspection workbench"
   homepage "https://github.com/everettjf/bytetrawl"
-  url "https://github.com/everettjf/homebrew-tap/releases/download/bytetrawl-v1.0.1/bytetrawl-cli-1.0.1-aarch64-apple-darwin.tar.gz"
-  sha256 "bdee5b27d8042b4e7c2cae21753a2fe37879be023e22deef0cd4e8298a461e9a"
+  url "https://github.com/everettjf/homebrew-tap/releases/download/bytetrawl-v1.0.2/bytetrawl-cli-1.0.2-aarch64-apple-darwin.tar.gz"
+  sha256 "5f5aec58d8e3e4a5e914a86a60d31f4d8b2b99f25e5fef6692a76df1047a9aed"
   license "Apache-2.0"
 
   depends_on arch: :arm64
