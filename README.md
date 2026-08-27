@@ -8,6 +8,12 @@ ByteTrawl is a cross-platform, static application and binary inspection workbenc
 
 **Current release:** [ByteTrawl 1.0.0](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.0.0) for Apple silicon Macs.
 
+## Screenshots
+
+[![ByteTrawl inspecting GrapeCompare.app](docs/assets/screenshots/overview.jpg)](https://xnu.app/bytetrawl/#gallery)
+
+The live [ByteTrawl gallery](https://xnu.app/bytetrawl/#gallery) rotates through application structure, Mach-O details, dependency resolution, extracted strings, and bounded hex inspection. The screenshots were captured from ByteTrawl 1.0.0 while statically inspecting `/Applications/GrapeCompare.app`.
+
 ## Install with Homebrew
 
 ```sh

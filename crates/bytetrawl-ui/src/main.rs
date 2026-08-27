@@ -20,7 +20,10 @@ use gpui_component::{
     button::Button,
     input::{Copy, Cut, Input, InputEvent, InputState, Paste, Redo, SelectAll, Undo},
 };
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 mod theme;
 
@@ -42,6 +45,24 @@ actions!(
         Quit
     ]
 );
+
+#[derive(Default)]
+struct WindowViews(std::collections::HashMap<WindowId, WeakEntity<ByteTrawlApp>>);
+
+impl Global for WindowViews {}
+
+static STARTUP_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+
+fn take_startup_path() -> Option<PathBuf> {
+    STARTUP_PATH
+        .get_or_init(|| {
+            let path = std::env::args_os().nth(1).map(PathBuf::from);
+            Mutex::new(path.filter(|path| path.exists()))
+        })
+        .lock()
+        .ok()?
+        .take()
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum InspectorTab {
@@ -112,6 +133,7 @@ impl InspectorTab {
 }
 
 struct ByteTrawlApp {
+    focus_handle: FocusHandle,
     artifact: Option<Arc<ArtifactNode>>,
     selected: Option<uuid::Uuid>,
     expanded_nodes: std::collections::HashSet<uuid::Uuid>,
@@ -152,6 +174,8 @@ struct ByteTrawlApp {
 
 impl ByteTrawlApp {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window);
         let search_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Search artifact, symbols, strings, or enter hex bytes…")
@@ -172,6 +196,7 @@ impl ByteTrawlApp {
             }
         });
         Self {
+            focus_handle,
             artifact: None,
             selected: None,
             expanded_nodes: std::collections::HashSet::new(),
@@ -2108,6 +2133,7 @@ impl Render for ByteTrawlApp {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
+            .track_focus(&self.focus_handle)
             .flex()
             .flex_col()
             .bg(rgb(BG))
@@ -2601,6 +2627,35 @@ fn quit(_: &Quit, cx: &mut App) {
     cx.quit();
 }
 
+fn active_bytetrawl_view(cx: &App) -> Option<Entity<ByteTrawlApp>> {
+    let window_id = cx.active_window()?.window_id();
+    cx.global::<WindowViews>().0.get(&window_id)?.upgrade()
+}
+
+fn open_file_from_menu(_: &OpenFile, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| this.choose(false, cx));
+    }
+}
+
+fn open_artifact_from_menu(_: &OpenArtifact, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| this.choose(true, cx));
+    }
+}
+
+fn open_workspace_from_menu(_: &OpenWorkspace, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| this.open_workspace(cx));
+    }
+}
+
+fn save_workspace_from_menu(_: &SaveWorkspace, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| this.save_workspace(cx));
+    }
+}
+
 fn open_bytetrawl_window(cx: &mut App) {
     cx.spawn(async move |cx| {
         cx.open_window(
@@ -2617,6 +2672,12 @@ fn open_bytetrawl_window(cx: &mut App) {
             },
             |window, cx| {
                 let view = cx.new(|cx| ByteTrawlApp::new(window, cx));
+                if let Some(path) = take_startup_path() {
+                    view.update(cx, |this, cx| this.load(path, cx));
+                }
+                cx.global_mut::<WindowViews>()
+                    .0
+                    .insert(window.window_handle().window_id(), view.downgrade());
                 cx.new(|cx| Root::new(view, window, cx))
             },
         )?;
@@ -2633,9 +2694,14 @@ fn main() {
     Application::new().run(|cx| {
         gpui_component::init(cx);
         configure_component_theme(cx);
+        cx.set_global(WindowViews::default());
         cx.activate(true);
         cx.on_action(quit);
         cx.on_action(new_window);
+        cx.on_action(open_file_from_menu);
+        cx.on_action(open_artifact_from_menu);
+        cx.on_action(open_workspace_from_menu);
+        cx.on_action(save_workspace_from_menu);
         cx.bind_keys([
             KeyBinding::new("cmd-n", NewWindow, None),
             KeyBinding::new("cmd-o", OpenFile, None),

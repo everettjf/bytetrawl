@@ -11,6 +11,7 @@ cargo build --release -p bytetrawl
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp "$project_root/target/release/ByteTrawl" "$app_dir/Contents/MacOS/ByteTrawl"
 cp "$project_root/packaging/macos/Info.plist" "$app_dir/Contents/Info.plist"
+cp "$project_root/packaging/macos/ByteTrawl.icns" "$app_dir/Contents/Resources/ByteTrawl.icns"
 chmod 755 "$app_dir/Contents/MacOS/ByteTrawl"
 
 if command -v codesign >/dev/null 2>&1; then

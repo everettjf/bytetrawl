@@ -15,6 +15,8 @@
   <meta name="twitter:title" content="ByteTrawl 1.0.0">
   <meta name="twitter:description" content="Static inspection for apps, packages & binaries.">
   <meta name="twitter:image" content="https://xnu.app/bytetrawl/assets/og.png">
+  <link rel="icon" type="image/png" sizes="64x64" href="assets/icons/favicon-64.png">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -22,6 +24,7 @@
     <a class="brand" href="#top" aria-label="ByteTrawl home"><span class="brand-mark">BT</span><span>ByteTrawl</span></a>
     <nav aria-label="Primary navigation">
       <a href="#inspect">Inspect</a>
+      <a href="#gallery">Gallery</a>
       <a href="#safety">Safety</a>
       <a href="#install">Install</a>
       <a class="nav-release" href="https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.0.0">v1.0.0 ↗</a>
@@ -41,30 +44,17 @@
         <p class="micro">Apple silicon · Ad-hoc signed · Apache-2.0</p>
       </div>
 
-      <div class="inspector" aria-label="Stylized ByteTrawl inspector preview">
-        <div class="titlebar"><i></i><i></i><i></i><span>ByteTrawl</span></div>
-        <div class="search">Search artifact, symbols, strings, or enter hex bytes… <b>⌘F</b></div>
-        <div class="workbench">
-          <aside>
-            <small>ARTIFACT TREE</small>
-            <p>◆ Sample.app</p>
-            <p class="indent">▾ Executables</p>
-            <p class="indent active">▶ Sample</p>
-            <p class="indent">▸ Frameworks</p>
-            <p class="indent">▸ Resources</p>
-          </aside>
-          <div class="panel">
-            <div class="tabs"><span class="selected">Overview</span><span>Strings</span><span>Hex</span></div>
-            <div class="hex">
-              <code><b>00000000</b> cf fa ed fe 0c 00 00 01 00 00 00 00</code>
-              <code><b>00000010</b> 02 00 00 00 15 00 00 00 58 09 00 00</code>
-              <code><b>00000020</b> 85 00 20 00 00 00 00 00 19 00 00 00</code>
-              <code><b>00000030</b> 48 00 00 00 5f 5f 54 45 58 54 00 00</code>
-            </div>
-            <div class="finding"><span>FORMAT</span><strong>Universal Mach-O</strong><span>ARCH</span><strong>arm64</strong></div>
-          </div>
+      <div class="inspector carousel" id="gallery" aria-label="ByteTrawl screenshots" aria-roledescription="carousel">
+        <div class="slides" aria-live="polite">
+          <figure class="slide active"><img src="assets/screenshots/overview.jpg" alt="ByteTrawl overview of GrapeCompare.app"><figcaption><b>Application overview</b><span>Explore a complete macOS app as a logical artifact tree.</span></figcaption></figure>
+          <figure class="slide"><img src="assets/screenshots/executable.jpg" alt="ByteTrawl Mach-O executable overview" loading="lazy"><figcaption><b>Binary inspection</b><span>See architecture, format, entry point, imports, and exports.</span></figcaption></figure>
+          <figure class="slide"><img src="assets/screenshots/dependencies.jpg" alt="ByteTrawl dependency graph" loading="lazy"><figcaption><b>Dependency graph</b><span>Resolve requested libraries across every architecture.</span></figcaption></figure>
+          <figure class="slide"><img src="assets/screenshots/strings.jpg" alt="ByteTrawl extracted strings view" loading="lazy"><figcaption><b>Mapped strings</b><span>Search extracted content with file and virtual addresses.</span></figcaption></figure>
+          <figure class="slide"><img src="assets/screenshots/hex.jpg" alt="ByteTrawl hexadecimal viewer" loading="lazy"><figcaption><b>Hex windows</b><span>Inspect bounded 4 KiB chunks without loading the whole file.</span></figcaption></figure>
         </div>
-        <div class="status">Ready — static inspection only</div>
+        <button class="carousel-arrow previous" type="button" data-previous aria-label="Previous screenshot">←</button>
+        <button class="carousel-arrow next" type="button" data-next aria-label="Next screenshot">→</button>
+        <div class="carousel-dots" role="tablist" aria-label="Choose screenshot"></div>
       </div>
     </section>
 
@@ -112,6 +102,52 @@
       button.textContent = 'Copied';
       setTimeout(() => button.textContent = 'Copy', 1600);
     });
+
+    const carousel = document.querySelector('.carousel');
+    const slides = [...carousel.querySelectorAll('.slide')];
+    const dots = carousel.querySelector('.carousel-dots');
+    let current = 0;
+    let timer;
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+
+    const showSlide = (index) => {
+      current = (index + slides.length) % slides.length;
+      slides.forEach((slide, i) => {
+        const active = i === current;
+        slide.classList.toggle('active', active);
+        slide.setAttribute('aria-hidden', String(!active));
+      });
+      [...dots.children].forEach((dot, i) => {
+        dot.classList.toggle('active', i === current);
+        dot.setAttribute('aria-selected', String(i === current));
+      });
+    };
+    const stop = () => clearInterval(timer);
+    const start = () => {
+      stop();
+      if (!reducedMotion.matches) timer = setInterval(() => showSlide(current + 1), 5200);
+    };
+    slides.forEach((_, i) => {
+      const dot = document.createElement('button');
+      dot.type = 'button';
+      dot.role = 'tab';
+      dot.setAttribute('aria-label', `Show screenshot ${i + 1}`);
+      dot.addEventListener('click', () => { showSlide(i); start(); });
+      dots.append(dot);
+    });
+    carousel.querySelector('[data-previous]').addEventListener('click', () => { showSlide(current - 1); start(); });
+    carousel.querySelector('[data-next]').addEventListener('click', () => { showSlide(current + 1); start(); });
+    carousel.addEventListener('mouseenter', stop);
+    carousel.addEventListener('mouseleave', start);
+    carousel.addEventListener('focusin', stop);
+    carousel.addEventListener('focusout', start);
+    carousel.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowLeft') showSlide(current - 1);
+      if (event.key === 'ArrowRight') showSlide(current + 1);
+    });
+    reducedMotion.addEventListener('change', start);
+    showSlide(0);
+    start();
   </script>
 </body>
 </html>
