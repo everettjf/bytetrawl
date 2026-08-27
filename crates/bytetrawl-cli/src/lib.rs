@@ -4,13 +4,16 @@ use bytetrawl_analysis::{
     extract_strings_node_cancellable, hash_node, inspect_metadata, inspect_signature_cancellable,
     open_artifact, resolve_dependencies,
 };
+use bytetrawl_android::{AndroidAuditReportV1, audit_apk, is_apk};
 use bytetrawl_compare::{CompareReportV1, compare_artifacts};
 use bytetrawl_core::{
     ArtifactKind, ArtifactNode, BinaryAnalysis, DependencyGraph, FileSummary, Finding, Severity,
     SignatureInfo,
 };
 use bytetrawl_ios::{IpaAuditReportV1, IpaViewCompatibleReport, audit_ipa, ipa_view_compatible};
-use bytetrawl_policy::{PolicyViolation, ReleasePolicyV1, evaluate_compare, evaluate_ipa};
+use bytetrawl_policy::{
+    PolicyViolation, ReleasePolicyV1, evaluate_android, evaluate_compare, evaluate_ipa,
+};
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use indexmap::IndexMap;
@@ -184,6 +187,8 @@ pub struct InspectionReport {
     pub ipa: Option<IpaAuditReportV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ipa_view_compatibility: Option<IpaViewCompatibleReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub android: Option<AndroidAuditReportV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub policy_violations: Vec<PolicyViolation>,
     pub findings: Vec<ReportFinding>,
@@ -600,16 +605,33 @@ pub fn inspect(
     } else {
         None
     };
-    let policy_violations = if let (Some(path), Some(ipa)) = (args.policy.as_deref(), ipa.as_ref())
-    {
-        evaluate_ipa(&load_policy(path)?, ipa)
-    } else {
-        Vec::new()
-    };
     let ipa_view_compatibility = ipa.as_ref().map(ipa_view_compatible);
+    let android = if is_apk(&artifact) {
+        match audit_apk(&artifact, cancellation) {
+            Ok(report) => Some(report),
+            Err(error) => {
+                run_errors.push(ReportError {
+                    stage: "android_audit",
+                    message: error.to_string(),
+                });
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let policy = args.policy.as_deref().map(load_policy).transpose()?;
+    let mut policy_violations = Vec::new();
+    if let (Some(policy), Some(ipa)) = (policy.as_ref(), ipa.as_ref()) {
+        policy_violations.extend(evaluate_ipa(policy, ipa));
+    }
+    if let (Some(policy), Some(android)) = (policy.as_ref(), android.as_ref()) {
+        policy_violations.extend(evaluate_android(policy, android));
+    }
     let partial = !run_errors.is_empty()
         || files.iter().any(|file| !file.errors.is_empty())
-        || ipa.as_ref().is_some_and(|report| report.partial);
+        || ipa.as_ref().is_some_and(|report| report.partial)
+        || android.as_ref().is_some_and(|report| report.partial);
     Ok(InspectionReport {
         schema_version: REPORT_SCHEMA_VERSION,
         generator: GeneratorInfo {
@@ -622,6 +644,7 @@ pub fn inspect(
         dependency_graph,
         ipa,
         ipa_view_compatibility,
+        android,
         policy_violations,
         findings,
         run: RunInfo {
@@ -680,6 +703,15 @@ fn all_report_findings(report: &InspectionReport) -> Vec<(Severity, String, Stri
                     .first()
                     .map(|evidence| evidence.path.display().to_string())
                     .unwrap_or_default(),
+            )
+        }));
+    }
+    if let Some(android) = report.android.as_ref() {
+        findings.extend(android.findings.iter().map(|item| {
+            (
+                item.severity,
+                item.title.clone(),
+                item.evidence_path.display().to_string(),
             )
         }));
     }
@@ -795,6 +827,12 @@ fn report_reaches_threshold(report: &InspectionReport, threshold: SeverityThresh
         .any(|finding| severity_rank(finding.finding.severity) >= threshold)
         || report.ipa.as_ref().is_some_and(|ipa| {
             ipa.findings
+                .iter()
+                .any(|finding| severity_rank(finding.severity) >= threshold)
+        })
+        || report.android.as_ref().is_some_and(|android| {
+            android
+                .findings
                 .iter()
                 .any(|finding| severity_rank(finding.severity) >= threshold)
         })

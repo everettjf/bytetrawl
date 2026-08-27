@@ -8,6 +8,7 @@ use bytetrawl_analysis::{
     inspect_metadata, inspect_signature_cancellable, open_artifact, resolve_dependencies,
     search_node,
 };
+use bytetrawl_android::{AndroidAuditReportV1, audit_apk, is_apk};
 use bytetrawl_compare::{CompareReportV1, compare_artifacts};
 use bytetrawl_core::{
     ArtifactKind, ArtifactNode, BinaryAnalysis, BinaryPlatform, DependencyGraph, FileSummary,
@@ -79,6 +80,9 @@ fn take_startup_path() -> Option<PathBuf> {
 enum InspectorTab {
     Search,
     Compare,
+    AndroidSummary,
+    AndroidComponents,
+    AndroidFindings,
     IpaSummary,
     IpaTargets,
     IpaPrivacy,
@@ -107,6 +111,9 @@ impl InspectorTab {
         match self {
             Self::Search => "Search",
             Self::Compare => "Compare",
+            Self::AndroidSummary => "Android Summary",
+            Self::AndroidComponents => "Components",
+            Self::AndroidFindings => "Android Findings",
             Self::IpaSummary => "Summary",
             Self::IpaTargets => "Targets",
             Self::IpaPrivacy => "Privacy",
@@ -134,6 +141,9 @@ impl InspectorTab {
         [
             Self::Search,
             Self::Compare,
+            Self::AndroidSummary,
+            Self::AndroidComponents,
+            Self::AndroidFindings,
             Self::IpaSummary,
             Self::IpaTargets,
             Self::IpaPrivacy,
@@ -166,6 +176,7 @@ struct ByteTrawlApp {
     artifact: Option<Arc<ArtifactNode>>,
     ipa_report: Option<Arc<IpaAuditReportV1>>,
     comparison: Option<Arc<CompareReportV1>>,
+    android_report: Option<Arc<AndroidAuditReportV1>>,
     selected: Option<uuid::Uuid>,
     expanded_nodes: std::collections::HashSet<uuid::Uuid>,
     analysis: Option<Arc<BinaryAnalysis>>,
@@ -231,6 +242,7 @@ impl ByteTrawlApp {
             artifact: None,
             ipa_report: None,
             comparison: None,
+            android_report: None,
             selected: None,
             expanded_nodes: std::collections::HashSet::new(),
             analysis: None,
@@ -433,7 +445,15 @@ impl ByteTrawlApp {
                         .is_some_and(|format| format == "Apple iOS IPA")
                         .then(|| audit_ipa(&root, &cancellation))
                         .transpose()?;
-                    Ok::<_, bytetrawl_core::ByteTrawlError>((root, metadata, ipa_report))
+                    let android_report = is_apk(&root)
+                        .then(|| audit_apk(&root, &cancellation))
+                        .transpose()?;
+                    Ok::<_, bytetrawl_core::ByteTrawlError>((
+                        root,
+                        metadata,
+                        ipa_report,
+                        android_report,
+                    ))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -442,7 +462,7 @@ impl ByteTrawlApp {
                 }
                 this.loading = false;
                 match result {
-                    Ok((root, metadata, ipa_report)) => {
+                    Ok((root, metadata, ipa_report, android_report)) => {
                         let opened_path = root.path.clone();
                         this.expanded_nodes.clear();
                         this.expanded_nodes.insert(root.id);
@@ -479,6 +499,7 @@ impl ByteTrawlApp {
                         }
                         this.artifact = Some(Arc::new(root));
                         this.ipa_report = ipa_report.map(Arc::new);
+                        this.android_report = android_report.map(Arc::new);
                         this.selected = Some(id);
                         this.analysis = None;
                         this.summary = None;
@@ -499,6 +520,10 @@ impl ByteTrawlApp {
                             && id == this.artifact.as_ref().map_or(id, |root| root.id)
                         {
                             this.tab = InspectorTab::IpaSummary;
+                        } else if this.android_report.is_some()
+                            && id == this.artifact.as_ref().map_or(id, |root| root.id)
+                        {
+                            this.tab = InspectorTab::AndroidSummary;
                         }
                         let should_analyze = this
                             .artifact
@@ -515,6 +540,7 @@ impl ByteTrawlApp {
                     }
                     Err(e) => {
                         this.ipa_report = None;
+                        this.android_report = None;
                         this.error = Some(e.to_string().into());
                         this.status = "Open failed".into();
                     }
@@ -1099,6 +1125,21 @@ impl ByteTrawlApp {
             ]);
             return tabs;
         }
+        let android_root_selected = self.android_report.is_some()
+            && self.selected_node().is_some_and(|node| {
+                self.artifact
+                    .as_ref()
+                    .is_some_and(|artifact| artifact.id == node.id)
+            });
+        if android_root_selected {
+            tabs.extend([
+                InspectorTab::AndroidSummary,
+                InspectorTab::AndroidComponents,
+                InspectorTab::AndroidFindings,
+                InspectorTab::DependencyGraph,
+            ]);
+            return tabs;
+        }
         tabs.push(InspectorTab::Overview);
         if self.artifact.is_some() {
             tabs.push(InspectorTab::DependencyGraph);
@@ -1659,6 +1700,11 @@ impl ByteTrawlApp {
         match self.tab {
             InspectorTab::Search => self.render_search(cx).into_any_element(),
             InspectorTab::Compare => empty_state().into_any_element(),
+            InspectorTab::AndroidSummary => self.render_android_summary().into_any_element(),
+            InspectorTab::AndroidComponents => {
+                self.render_android_components(cx).into_any_element()
+            }
+            InspectorTab::AndroidFindings => self.render_android_findings(cx).into_any_element(),
             InspectorTab::IpaSummary => self.render_ipa_summary().into_any_element(),
             InspectorTab::IpaTargets => self.render_ipa_targets(cx).into_any_element(),
             InspectorTab::IpaPrivacy => self.render_ipa_privacy().into_any_element(),
@@ -2198,6 +2244,164 @@ impl ByteTrawlApp {
                 rows,
                 cx,
             ))
+            .into_any_element()
+    }
+    fn render_android_summary(&self) -> impl IntoElement {
+        let Some(report) = self.android_report.as_deref() else {
+            return empty_state().into_any_element();
+        };
+        let total_methods: u64 = report.dex.iter().map(|dex| dex.methods as u64).sum();
+        let total_classes: u64 = report.dex.iter().map(|dex| dex.classes as u64).sum();
+        kv_panel(
+            "Android Release Audit",
+            vec![
+                (
+                    "Package".into(),
+                    report
+                        .identity
+                        .package
+                        .clone()
+                        .unwrap_or_else(|| "—".into()),
+                ),
+                (
+                    "Version / Code".into(),
+                    format!(
+                        "{} / {}",
+                        report.identity.version_name.as_deref().unwrap_or("—"),
+                        report.identity.version_code.as_deref().unwrap_or("—")
+                    ),
+                ),
+                (
+                    "Min / Target SDK".into(),
+                    format!(
+                        "{} / {}",
+                        report.identity.min_sdk.as_deref().unwrap_or("—"),
+                        report.identity.target_sdk.as_deref().unwrap_or("—")
+                    ),
+                ),
+                ("Permissions".into(), report.permissions.len().to_string()),
+                ("Components".into(), report.components.len().to_string()),
+                ("DEX files".into(), report.dex.len().to_string()),
+                ("DEX methods".into(), total_methods.to_string()),
+                ("DEX classes".into(), total_classes.to_string()),
+                (
+                    "Native libraries".into(),
+                    report.native_libraries.len().to_string(),
+                ),
+                (
+                    "resources.arsc".into(),
+                    report
+                        .resources_arsc_bytes
+                        .map(format_size)
+                        .unwrap_or_else(|| "Missing".into()),
+                ),
+                (
+                    "Signing".into(),
+                    if report.signing_schemes.is_empty() {
+                        "Not detected".into()
+                    } else {
+                        report.signing_schemes.join(", ")
+                    },
+                ),
+                ("Findings".into(), report.findings.len().to_string()),
+            ],
+        )
+        .into_any_element()
+    }
+    fn render_android_components(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let rows = self
+            .android_report
+            .as_deref()
+            .map(|report| {
+                report
+                    .components
+                    .iter()
+                    .map(|component| {
+                        vec![
+                            component.kind.clone(),
+                            component.name.clone(),
+                            component
+                                .exported
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "Inferred".into()),
+                            component.permission.clone().unwrap_or_default(),
+                            component.actions.join(", "),
+                            component.deep_links.join(", "),
+                        ]
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        table_panel(
+            "Android Components",
+            &[
+                "Kind",
+                "Name",
+                "Exported",
+                "Permission",
+                "Actions",
+                "Deep links",
+            ],
+            rows,
+            cx,
+        )
+    }
+    fn render_android_findings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let findings = self
+            .android_report
+            .as_deref()
+            .map(|report| report.findings.clone())
+            .unwrap_or_default();
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(panel_title("Android Release Findings"))
+            .when(findings.is_empty(), |panel| {
+                panel.child(info_panel(
+                    "Status",
+                    "No Android release findings were produced.",
+                ))
+            })
+            .children(findings.into_iter().map(|finding| {
+                let evidence = finding.evidence_path.clone();
+                div()
+                    .id(SharedString::from(format!(
+                        "android-finding-{}",
+                        finding.rule_id
+                    )))
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(PANEL))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(PANEL_2)))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.navigate_to_evidence(&evidence, cx)),
+                    )
+                    .child(
+                        div()
+                            .font_semibold()
+                            .text_color(rgb(TEXT))
+                            .child(finding.title),
+                    )
+                    .child(div().text_xs().text_color(rgb(MUTED)).child(format!(
+                        "{:?} · {} · {}",
+                        finding.severity,
+                        finding.rule_id,
+                        finding.evidence_path.display()
+                    )))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(MUTED))
+                            .child(finding.description),
+                    )
+            }))
             .into_any_element()
     }
     fn render_ipa_summary(&self) -> impl IntoElement {

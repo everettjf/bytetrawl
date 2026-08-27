@@ -206,6 +206,12 @@ fn populate_zip_members(root: &mut ArtifactNode, cancel: &CancellationToken) -> 
     }
 
     let mut ipa_info_plist_found = false;
+    let mut android_manifest_found = false;
+    let mut android_dex_found = false;
+    let mut android_bundle_manifest_found = false;
+    let mut android_bundle_config_found = false;
+    let mut xapk_manifest_found = false;
+    let mut nested_apk_found = false;
     let mut declared_bytes = 0u64;
     let mut member_paths = HashSet::new();
     for entry_index in 0..archive.len() {
@@ -262,6 +268,17 @@ fn populate_zip_members(root: &mut ArtifactNode, cancel: &CancellationToken) -> 
         if is_ipa_info_plist(&member_path) {
             ipa_info_plist_found = true;
         }
+        let member_text = member_path.to_string_lossy();
+        android_manifest_found |= member_path == Path::new("AndroidManifest.xml");
+        android_dex_found |= member_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("classes") && name.ends_with(".dex"));
+        android_bundle_manifest_found |=
+            member_path == Path::new("base/manifest/AndroidManifest.xml");
+        android_bundle_config_found |= member_path == Path::new("BundleConfig.pb");
+        xapk_manifest_found |= member_path == Path::new("manifest.json");
+        nested_apk_found |= member_text.to_ascii_lowercase().ends_with(".apk");
         insert_archive_member(root, &member_path, source)?;
     }
     if ipa_info_plist_found {
@@ -272,6 +289,22 @@ fn populate_zip_members(root: &mut ArtifactNode, cancel: &CancellationToken) -> 
             "Inspection Mode".into(),
             "Virtual archive members; ByteTrawl did not extract this IPA.".into(),
         );
+    } else if android_manifest_found && android_dex_found {
+        root.kind = ArtifactKind::Package;
+        root.properties
+            .insert("Package Format".into(), "Android APK".into());
+    } else if android_bundle_manifest_found && android_bundle_config_found {
+        root.kind = ArtifactKind::Package;
+        root.properties
+            .insert("Package Format".into(), "Android App Bundle (AAB)".into());
+    } else if nested_apk_found && xapk_manifest_found {
+        root.kind = ArtifactKind::Package;
+        root.properties
+            .insert("Package Format".into(), "Android XAPK".into());
+    } else if nested_apk_found {
+        root.kind = ArtifactKind::Package;
+        root.properties
+            .insert("Package Format".into(), "Android APK Set (APKS)".into());
     }
     root.properties
         .insert("Archive Members".into(), archive.len().to_string());

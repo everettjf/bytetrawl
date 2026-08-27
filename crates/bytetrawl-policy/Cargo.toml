@@ -8,6 +8,7 @@ license.workspace = true
 bytetrawl-core = { path = "../bytetrawl-core" }
 bytetrawl-ios = { path = "../bytetrawl-ios" }
 bytetrawl-compare = { path = "../bytetrawl-compare" }
+bytetrawl-android = { path = "../bytetrawl-android" }
 serde.workspace = true
 
 [dev-dependencies]
