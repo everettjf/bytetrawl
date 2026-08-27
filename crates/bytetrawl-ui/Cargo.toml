@@ -10,6 +10,7 @@ anyhow.workspace = true
 bytetrawl-core = { path = "../bytetrawl-core" }
 bytetrawl-format = { path = "../bytetrawl-format" }
 bytetrawl-analysis = { path = "../bytetrawl-analysis" }
+bytetrawl-ios = { path = "../bytetrawl-ios" }
 bytetrawl-tools = { path = "../bytetrawl-tools" }
 gpui.workspace = true
 gpui-component.workspace = true

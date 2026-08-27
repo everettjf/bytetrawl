@@ -1,0 +1,21 @@
+[package]
+name = "bytetrawl-ios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytetrawl-core = { path = "../bytetrawl-core" }
+bytetrawl-format = { path = "../bytetrawl-format" }
+bytetrawl-analysis = { path = "../bytetrawl-analysis" }
+chrono.workspace = true
+indexmap.workspace = true
+plist.workspace = true
+serde.workspace = true
+sha2.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+zip.workspace = true
+tempfile.workspace = true
+serde_json.workspace = true

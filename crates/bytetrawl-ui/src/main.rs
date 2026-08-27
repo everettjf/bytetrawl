@@ -12,6 +12,7 @@ use bytetrawl_core::{
     ArtifactKind, ArtifactNode, BinaryAnalysis, BinaryPlatform, DependencyGraph, FileSummary,
     Severity, SignatureInfo, Workspace,
 };
+use bytetrawl_ios::{IpaAuditReportV1, audit_ipa};
 use bytetrawl_tools::{ToolAvailability, ToolBehavior, ToolRegistry};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -136,6 +137,7 @@ impl InspectorTab {
 struct ByteTrawlApp {
     focus_handle: FocusHandle,
     artifact: Option<Arc<ArtifactNode>>,
+    ipa_report: Option<Arc<IpaAuditReportV1>>,
     selected: Option<uuid::Uuid>,
     expanded_nodes: std::collections::HashSet<uuid::Uuid>,
     analysis: Option<Arc<BinaryAnalysis>>,
@@ -199,6 +201,7 @@ impl ByteTrawlApp {
         Self {
             focus_handle,
             artifact: None,
+            ipa_report: None,
             selected: None,
             expanded_nodes: std::collections::HashSet::new(),
             analysis: None,
@@ -321,7 +324,13 @@ impl ByteTrawlApp {
                         .map(inspect_metadata)
                         .transpose()?
                         .unwrap_or_default();
-                    Ok::<_, bytetrawl_core::ByteTrawlError>((root, metadata))
+                    let ipa_report = root
+                        .properties
+                        .get("Package Format")
+                        .is_some_and(|format| format == "Apple iOS IPA")
+                        .then(|| audit_ipa(&root, &cancellation))
+                        .transpose()?;
+                    Ok::<_, bytetrawl_core::ByteTrawlError>((root, metadata, ipa_report))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -330,7 +339,7 @@ impl ByteTrawlApp {
                 }
                 this.loading = false;
                 match result {
-                    Ok((root, metadata)) => {
+                    Ok((root, metadata, ipa_report)) => {
                         this.expanded_nodes.clear();
                         this.expanded_nodes.insert(root.id);
                         this.expanded_nodes.extend(
@@ -365,6 +374,7 @@ impl ByteTrawlApp {
                                 .and_then(InspectorTab::from_label);
                         }
                         this.artifact = Some(Arc::new(root));
+                        this.ipa_report = ipa_report.map(Arc::new);
                         this.selected = Some(id);
                         this.analysis = None;
                         this.summary = None;
@@ -390,6 +400,7 @@ impl ByteTrawlApp {
                         }
                     }
                     Err(e) => {
+                        this.ipa_report = None;
                         this.error = Some(e.to_string().into());
                         this.status = "Open failed".into();
                     }
@@ -509,17 +520,23 @@ impl ByteTrawlApp {
     }
 
     fn should_run_host_signature(&self) -> bool {
-        self.current_analysis()
-            .is_some_and(|analysis| analysis.platform == Some(BinaryPlatform::MacOs))
-            || self.selected_node().is_some_and(|node| {
-                matches!(
-                    node.kind,
-                    ArtifactKind::Application
-                        | ArtifactKind::Bundle
-                        | ArtifactKind::Framework
-                        | ArtifactKind::Plugin
-                )
-            })
+        self.selected_node().is_some_and(|node| {
+            matches!(
+                node.source,
+                Some(bytetrawl_core::ArtifactSource::Filesystem { .. })
+            ) && (self
+                .current_analysis()
+                .is_some_and(|analysis| analysis.platform == Some(BinaryPlatform::MacOs))
+                || {
+                    matches!(
+                        node.kind,
+                        ArtifactKind::Application
+                            | ArtifactKind::Bundle
+                            | ArtifactKind::Framework
+                            | ArtifactKind::Plugin
+                    )
+                })
+        })
     }
 
     fn load_host_signature(&mut self, cx: &mut Context<Self>) {
@@ -1981,6 +1998,42 @@ impl ByteTrawlApp {
                     .map(|e| format!("{e:.3} bits/byte (indicator only)"))
                     .unwrap_or_default(),
             ));
+        }
+        if let Some(report) = self.ipa_report.as_deref()
+            && self
+                .artifact
+                .as_ref()
+                .is_some_and(|artifact| artifact.id == node.id)
+        {
+            values.extend([
+                (
+                    "Bundle ID".into(),
+                    report
+                        .metadata
+                        .bundle_identifier
+                        .clone()
+                        .unwrap_or_default(),
+                ),
+                (
+                    "Version / Build".into(),
+                    format!(
+                        "{} / {}",
+                        report.metadata.version.as_deref().unwrap_or("—"),
+                        report.metadata.build.as_deref().unwrap_or("—")
+                    ),
+                ),
+                (
+                    "Installed / Compressed".into(),
+                    format!(
+                        "{} / {}",
+                        format_size(report.total_bytes),
+                        format_size(report.compressed_bytes)
+                    ),
+                ),
+                ("Architectures".into(), report.architectures.join(", ")),
+                ("Embedded targets".into(), report.targets.len().to_string()),
+                ("IPA findings".into(), report.findings.len().to_string()),
+            ]);
         }
         if self
             .summary

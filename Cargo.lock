@@ -852,6 +852,7 @@ dependencies = [
  "bytetrawl-analysis",
  "bytetrawl-core",
  "bytetrawl-format",
+ "bytetrawl-ios",
  "bytetrawl-tools",
  "gpui",
  "gpui-component",
@@ -895,6 +896,7 @@ version = "1.0.3"
 dependencies = [
  "bytetrawl-analysis",
  "bytetrawl-core",
+ "bytetrawl-ios",
  "chrono",
  "clap",
  "ctrlc",
@@ -930,6 +932,24 @@ dependencies = [
  "quick-xml 0.38.4",
  "sha1",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "bytetrawl-ios"
+version = "1.0.3"
+dependencies = [
+ "bytetrawl-analysis",
+ "bytetrawl-core",
+ "bytetrawl-format",
+ "chrono",
+ "hex",
+ "indexmap",
+ "plist",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "zip",
 ]
 
 [[package]]

@@ -1,13 +1,14 @@
 use bytetrawl_analysis::{
     CancellationToken, HashOptions, analyze_node, annotate_string_locations,
     apply_signature_analysis, build_dependency_graph, enrich_analysis_entropy,
-    extract_strings_file_cancellable, hash_file, inspect_metadata, inspect_signature_cancellable,
+    extract_strings_node_cancellable, hash_node, inspect_metadata, inspect_signature_cancellable,
     open_artifact, resolve_dependencies,
 };
 use bytetrawl_core::{
     ArtifactKind, ArtifactNode, BinaryAnalysis, DependencyGraph, FileSummary, Finding, Severity,
     SignatureInfo,
 };
+use bytetrawl_ios::{IpaAuditReportV1, audit_ipa};
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use indexmap::IndexMap;
@@ -141,6 +142,8 @@ pub struct InspectionReport {
     pub artifact_signature: Option<SignatureInfo>,
     pub files: Vec<FileReport>,
     pub dependency_graph: Option<DependencyGraph>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipa: Option<IpaAuditReportV1>,
     pub findings: Vec<ReportFinding>,
     pub run: RunInfo,
 }
@@ -285,6 +288,10 @@ pub fn inspect(
         if let Some(analysis) = &mut analysis {
             resolve_dependencies(analysis, &artifact);
             if want_entropy
+                && !matches!(
+                    node.source,
+                    Some(bytetrawl_core::ArtifactSource::ArchiveMember { .. })
+                )
                 && let Err(error) = enrich_analysis_entropy(&node.path, analysis, cancellation)
             {
                 errors.push(ReportError {
@@ -296,6 +303,10 @@ pub fn inspect(
                 && matches!(
                     analysis.platform,
                     Some(bytetrawl_core::BinaryPlatform::MacOs)
+                )
+                && matches!(
+                    node.source,
+                    Some(bytetrawl_core::ArtifactSource::Filesystem { .. })
                 )
             {
                 match inspect_signature_cancellable(&node.path, cancellation) {
@@ -343,7 +354,7 @@ pub fn inspect(
             analysis: None,
         };
         if want_entropy || !hashes.is_empty() {
-            match hash_file(&node.path, hash_options, cancellation) {
+            match hash_node(node, hash_options, cancellation) {
                 Ok(result) => summary = result,
                 Err(error) => errors.push(ReportError {
                     stage: "hash_entropy",
@@ -353,8 +364,8 @@ pub fn inspect(
         }
 
         let strings = if want_strings {
-            match extract_strings_file_cancellable(
-                &node.path,
+            match extract_strings_node_cancellable(
+                node,
                 args.min_string_length,
                 args.max_strings,
                 cancellation,
@@ -439,7 +450,27 @@ pub fn inspect(
     } else {
         None
     };
-    let partial = !run_errors.is_empty() || files.iter().any(|file| !file.errors.is_empty());
+    let ipa = if artifact
+        .properties
+        .get("Package Format")
+        .is_some_and(|format| format == "Apple iOS IPA")
+    {
+        match audit_ipa(&artifact, cancellation) {
+            Ok(report) => Some(report),
+            Err(error) => {
+                run_errors.push(ReportError {
+                    stage: "ipa_audit",
+                    message: error.to_string(),
+                });
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let partial = !run_errors.is_empty()
+        || files.iter().any(|file| !file.errors.is_empty())
+        || ipa.as_ref().is_some_and(|report| report.partial);
     Ok(InspectionReport {
         schema_version: REPORT_SCHEMA_VERSION,
         generator: GeneratorInfo {
@@ -450,6 +481,7 @@ pub fn inspect(
         artifact_signature,
         files,
         dependency_graph,
+        ipa,
         findings,
         run: RunInfo {
             started_at,
@@ -498,6 +530,11 @@ fn report_reaches_threshold(report: &InspectionReport, threshold: SeverityThresh
         .findings
         .iter()
         .any(|finding| severity_rank(finding.finding.severity) >= threshold)
+        || report.ipa.as_ref().is_some_and(|ipa| {
+            ipa.findings
+                .iter()
+                .any(|finding| severity_rank(finding.severity) >= threshold)
+        })
 }
 
 fn threshold_rank(severity: SeverityThreshold) -> u8 {

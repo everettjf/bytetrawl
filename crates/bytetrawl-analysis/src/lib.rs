@@ -27,6 +27,8 @@ const MAX_DEPTH: usize = 64;
 const HEADER_BYTES: usize = 64 * 1024;
 const MAX_STRUCTURED_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ARCHIVE_MEMBER_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_ARCHIVE_DECLARED_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+const MAX_ARCHIVE_COMPRESSION_RATIO: u64 = 1_000;
 
 #[derive(Clone, Default)]
 pub struct CancellationToken(Arc<AtomicBool>);
@@ -204,6 +206,8 @@ fn populate_zip_members(root: &mut ArtifactNode, cancel: &CancellationToken) -> 
     }
 
     let mut ipa_info_plist_found = false;
+    let mut declared_bytes = 0u64;
+    let mut member_paths = HashSet::new();
     for entry_index in 0..archive.len() {
         cancel.check()?;
         let entry = archive.by_index(entry_index).map_err(|error| {
@@ -220,6 +224,29 @@ fn populate_zip_members(root: &mut ArtifactNode, cancel: &CancellationToken) -> 
         if entry.size() > MAX_ARCHIVE_MEMBER_BYTES {
             return Err(ByteTrawlError::Limit(format!(
                 "archive member {} exceeds {MAX_ARCHIVE_MEMBER_BYTES} bytes",
+                member_path.display()
+            )));
+        }
+        declared_bytes = declared_bytes
+            .checked_add(entry.size())
+            .ok_or_else(|| ByteTrawlError::Limit("archive declared size overflows u64".into()))?;
+        if declared_bytes > MAX_ARCHIVE_DECLARED_BYTES {
+            return Err(ByteTrawlError::Limit(format!(
+                "archive declares more than {MAX_ARCHIVE_DECLARED_BYTES} expanded bytes"
+            )));
+        }
+        if entry.size() > 64 * 1024 * 1024
+            && entry.compressed_size() > 0
+            && entry.size() / entry.compressed_size() > MAX_ARCHIVE_COMPRESSION_RATIO
+        {
+            return Err(ByteTrawlError::Limit(format!(
+                "archive member {} exceeds the maximum compression ratio",
+                member_path.display()
+            )));
+        }
+        if !member_paths.insert(member_path.clone()) {
+            return Err(ByteTrawlError::Malformed(format!(
+                "archive contains duplicate member path {}",
                 member_path.display()
             )));
         }
@@ -248,6 +275,8 @@ fn populate_zip_members(root: &mut ArtifactNode, cancel: &CancellationToken) -> 
     }
     root.properties
         .insert("Archive Members".into(), archive.len().to_string());
+    root.properties
+        .insert("Declared Expanded Size".into(), declared_bytes.to_string());
     Ok(())
 }
 
@@ -2015,6 +2044,62 @@ pub fn hash_file(
         sha1: options.sha1.then(|| hex::encode(h1.finalize())),
         md5: options.md5.then(|| hex::encode(h5.finalize())),
         entropy: Some(ent),
+        analysis: None,
+    })
+}
+
+pub fn hash_node(
+    node: &ArtifactNode,
+    options: HashOptions,
+    cancel: &CancellationToken,
+) -> Result<FileSummary> {
+    if !matches!(node.source, Some(ArtifactSource::ArchiveMember { .. })) {
+        return hash_file(&node.path, options, cancel);
+    }
+    let reader = ArtifactReader::open(node)?;
+    let mut h256 = Sha256::new();
+    let mut h1 = Sha1::new();
+    let mut h5 = Md5::new();
+    let mut counts = [0u64; 256];
+    let mut offset = 0u64;
+    while offset < reader.len() {
+        cancel.check()?;
+        let bytes = reader.read_range(offset, 1024 * 1024)?;
+        if bytes.is_empty() {
+            break;
+        }
+        for byte in &bytes {
+            counts[*byte as usize] += 1;
+        }
+        if options.sha256 {
+            h256.update(&bytes);
+        }
+        if options.sha1 {
+            h1.update(&bytes);
+        }
+        if options.md5 {
+            h5.update(&bytes);
+        }
+        offset = offset.saturating_add(bytes.len() as u64);
+    }
+    let entropy = if offset == 0 {
+        0.0
+    } else {
+        counts
+            .into_iter()
+            .filter(|count| *count > 0)
+            .map(|count| {
+                let probability = count as f64 / offset as f64;
+                -probability * probability.log2()
+            })
+            .sum()
+    };
+    Ok(FileSummary {
+        size: reader.len(),
+        sha256: options.sha256.then(|| hex::encode(h256.finalize())),
+        sha1: options.sha1.then(|| hex::encode(h1.finalize())),
+        md5: options.md5.then(|| hex::encode(h5.finalize())),
+        entropy: Some(entropy),
         analysis: None,
     })
 }
