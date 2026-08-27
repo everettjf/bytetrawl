@@ -2,10 +2,12 @@
 
 use bytetrawl_android::AndroidAuditReportV1;
 use bytetrawl_compare::CompareReportV1;
-use bytetrawl_core::Severity;
+use bytetrawl_core::{Finding, Severity};
 use bytetrawl_ios::IpaAuditReportV1;
 use bytetrawl_linux::DebianReportV1;
 use bytetrawl_windows::WindowsPackageReportV1;
+use chrono::{DateTime, Utc};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -35,6 +37,30 @@ pub struct ReleasePolicyV1 {
     pub forbidden_linux_maintainer_scripts: Vec<String>,
     #[serde(default)]
     pub forbid_privileged_linux_files: bool,
+    pub profile: Option<PolicyProfile>,
+    #[serde(default)]
+    pub enabled_rules: Vec<String>,
+    #[serde(default)]
+    pub disabled_rules: Vec<String>,
+    #[serde(default)]
+    pub severity_overrides: IndexMap<String, Severity>,
+    #[serde(default)]
+    pub suppressions: Vec<RuleSuppression>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyProfile {
+    Balanced,
+    Strict,
+    StoreRelease,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuleSuppression {
+    pub rule_id: String,
+    pub reason: String,
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 fn schema_version() -> String {
@@ -46,6 +72,40 @@ pub struct PolicyViolation {
     pub rule_id: String,
     pub severity: Severity,
     pub message: String,
+}
+
+pub fn evaluate_generic(
+    policy: &ReleasePolicyV1,
+    artifact_bytes: u64,
+    findings: &[Finding],
+) -> Vec<PolicyViolation> {
+    let mut violations = Vec::new();
+    if policy
+        .max_artifact_bytes
+        .is_some_and(|maximum| artifact_bytes > maximum)
+    {
+        violations.push(PolicyViolation {
+            rule_id: "policy.max-artifact-bytes".into(),
+            severity: Severity::High,
+            message: format!("artifact size {artifact_bytes} exceeds policy maximum"),
+        });
+    }
+    if let Some(minimum) = finding_threshold(policy) {
+        violations.extend(
+            findings
+                .iter()
+                .filter(|finding| severity_rank(finding.severity) >= severity_rank(minimum))
+                .map(|finding| PolicyViolation {
+                    rule_id: format!(
+                        "analysis.{}",
+                        finding.title.to_ascii_lowercase().replace(' ', "-")
+                    ),
+                    severity: finding.severity,
+                    message: finding.title.clone(),
+                }),
+        );
+    }
+    finalize(policy, violations)
 }
 
 pub fn evaluate_ipa(policy: &ReleasePolicyV1, report: &IpaAuditReportV1) -> Vec<PolicyViolation> {
@@ -91,7 +151,7 @@ pub fn evaluate_ipa(policy: &ReleasePolicyV1, report: &IpaAuditReportV1) -> Vec<
             }
         }
     }
-    if let Some(minimum) = policy.fail_on_severity {
+    if let Some(minimum) = finding_threshold(policy) {
         violations.extend(
             report
                 .findings
@@ -104,13 +164,7 @@ pub fn evaluate_ipa(policy: &ReleasePolicyV1, report: &IpaAuditReportV1) -> Vec<
                 }),
         );
     }
-    violations.sort_by(|left, right| {
-        left.rule_id
-            .cmp(&right.rule_id)
-            .then(left.message.cmp(&right.message))
-    });
-    violations.dedup();
-    violations
+    finalize(policy, violations)
 }
 
 pub fn evaluate_compare(
@@ -141,7 +195,7 @@ pub fn evaluate_compare(
             message: format!("size growth {} exceeds policy maximum", report.delta_bytes),
         });
     }
-    violations
+    finalize(policy, violations)
 }
 
 pub fn evaluate_android(
@@ -176,7 +230,7 @@ pub fn evaluate_android(
             message: "An APK signature is required".into(),
         });
     }
-    if let Some(minimum) = policy.fail_on_severity {
+    if let Some(minimum) = finding_threshold(policy) {
         violations.extend(
             report
                 .findings
@@ -189,13 +243,7 @@ pub fn evaluate_android(
                 }),
         );
     }
-    violations.sort_by(|left, right| {
-        left.rule_id
-            .cmp(&right.rule_id)
-            .then(left.message.cmp(&right.message))
-    });
-    violations.dedup();
-    violations
+    finalize(policy, violations)
 }
 
 pub fn evaluate_windows(
@@ -221,7 +269,20 @@ pub fn evaluate_windows(
             message: "An APPX/MSIX package signature is required".into(),
         });
     }
-    violations
+    if let Some(minimum) = finding_threshold(policy) {
+        violations.extend(
+            report
+                .findings
+                .iter()
+                .filter(|finding| severity_rank(finding.severity) >= severity_rank(minimum))
+                .map(|finding| PolicyViolation {
+                    rule_id: finding.rule_id.clone(),
+                    severity: finding.severity,
+                    message: finding.title.clone(),
+                }),
+        );
+    }
+    finalize(policy, violations)
 }
 
 pub fn evaluate_linux(policy: &ReleasePolicyV1, report: &DebianReportV1) -> Vec<PolicyViolation> {
@@ -261,7 +322,7 @@ pub fn evaluate_linux(policy: &ReleasePolicyV1, report: &DebianReportV1) -> Vec<
                 }),
         );
     }
-    if let Some(minimum) = policy.fail_on_severity {
+    if let Some(minimum) = finding_threshold(policy) {
         violations.extend(
             report
                 .findings
@@ -274,6 +335,33 @@ pub fn evaluate_linux(policy: &ReleasePolicyV1, report: &DebianReportV1) -> Vec<
                 }),
         );
     }
+    finalize(policy, violations)
+}
+
+fn finalize(
+    policy: &ReleasePolicyV1,
+    mut violations: Vec<PolicyViolation>,
+) -> Vec<PolicyViolation> {
+    let now = Utc::now();
+    violations.retain(|violation| {
+        if policy.disabled_rules.contains(&violation.rule_id) {
+            return false;
+        }
+        if !policy.enabled_rules.is_empty() && !policy.enabled_rules.contains(&violation.rule_id) {
+            return false;
+        }
+        !policy.suppressions.iter().any(|suppression| {
+            suppression.rule_id == violation.rule_id
+                && suppression
+                    .expires_at
+                    .is_none_or(|expiration| expiration > now)
+        })
+    });
+    for violation in &mut violations {
+        if let Some(severity) = policy.severity_overrides.get(&violation.rule_id) {
+            violation.severity = *severity;
+        }
+    }
     violations.sort_by(|left, right| {
         left.rule_id
             .cmp(&right.rule_id)
@@ -281,6 +369,15 @@ pub fn evaluate_linux(policy: &ReleasePolicyV1, report: &DebianReportV1) -> Vec<
     });
     violations.dedup();
     violations
+}
+
+fn finding_threshold(policy: &ReleasePolicyV1) -> Option<Severity> {
+    policy.fail_on_severity.or(match policy.profile {
+        Some(PolicyProfile::Balanced) => Some(Severity::High),
+        Some(PolicyProfile::Strict) => Some(Severity::Low),
+        Some(PolicyProfile::StoreRelease) => Some(Severity::Medium),
+        None => None,
+    })
 }
 
 fn severity_rank(severity: Severity) -> u8 {
@@ -305,5 +402,48 @@ mod tests {
         .expect("parse policy");
         assert_eq!(policy.schema_version, "1.0");
         assert_eq!(policy.fail_on_severity, Some(Severity::High));
+    }
+
+    #[test]
+    fn rule_controls_override_and_suppress_deterministically() {
+        let policy: ReleasePolicyV1 = serde_json::from_str(
+            r#"{
+                "profile":"strict",
+                "max_artifact_bytes":null,
+                "max_growth_bytes":null,
+                "fail_on_severity":null,
+                "disabled_rules":["rule.disabled"],
+                "severity_overrides":{"rule.override":"Critical"},
+                "suppressions":[{
+                    "rule_id":"rule.suppressed",
+                    "reason":"accepted until next review",
+                    "expires_at":"2999-01-01T00:00:00Z"
+                }]
+            }"#,
+        )
+        .expect("parse controlled policy");
+        let violations = finalize(
+            &policy,
+            vec![
+                PolicyViolation {
+                    rule_id: "rule.disabled".into(),
+                    severity: Severity::High,
+                    message: "disabled".into(),
+                },
+                PolicyViolation {
+                    rule_id: "rule.suppressed".into(),
+                    severity: Severity::High,
+                    message: "suppressed".into(),
+                },
+                PolicyViolation {
+                    rule_id: "rule.override".into(),
+                    severity: Severity::Low,
+                    message: "override".into(),
+                },
+            ],
+        );
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].rule_id, "rule.override");
+        assert_eq!(violations[0].severity, Severity::Critical);
     }
 }

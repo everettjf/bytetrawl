@@ -1,0 +1,40 @@
+name: ByteTrawl release audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact:
+        description: Path to the built IPA, APK, MSIX, DEB, app, directory, or binary
+        required: true
+        type: string
+
+jobs:
+  static-release-audit:
+    runs-on: macos-15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build ByteTrawl CLI
+        run: cargo build --release -p bytetrawl-cli
+      - name: Enforce release policy and produce SARIF
+        run: >-
+          target/release/bytetrawl-cli inspect
+          "${{ inputs.artifact }}"
+          --depth deep
+          --policy examples/policies/store-release.json
+          --format sarif
+          --output bytetrawl.sarif
+      - name: Upload Code Scanning results
+        if: always() && hashFiles('bytetrawl.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: bytetrawl.sarif
+      - name: Preserve audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bytetrawl-release-audit
+          path: bytetrawl.sarif

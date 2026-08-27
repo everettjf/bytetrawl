@@ -13,8 +13,8 @@ use bytetrawl_core::{
 use bytetrawl_ios::{IpaAuditReportV1, IpaViewCompatibleReport, audit_ipa, ipa_view_compatible};
 use bytetrawl_linux::{DebianReportV1, audit_deb, is_deb};
 use bytetrawl_policy::{
-    PolicyViolation, ReleasePolicyV1, evaluate_android, evaluate_compare, evaluate_ipa,
-    evaluate_linux, evaluate_windows,
+    PolicyViolation, ReleasePolicyV1, evaluate_android, evaluate_compare, evaluate_generic,
+    evaluate_ipa, evaluate_linux, evaluate_windows,
 };
 use bytetrawl_windows::{WindowsPackageReportV1, audit_msix, is_msix};
 use chrono::{DateTime, Utc};
@@ -657,6 +657,22 @@ pub fn inspect(
     };
     let policy = args.policy.as_deref().map(load_policy).transpose()?;
     let mut policy_violations = Vec::new();
+    if let Some(policy) = policy.as_ref()
+        && ipa.is_none()
+        && android.is_none()
+        && windows_package.is_none()
+        && linux_package.is_none()
+    {
+        let generic_findings = findings
+            .iter()
+            .map(|finding| finding.finding.clone())
+            .collect::<Vec<_>>();
+        policy_violations.extend(evaluate_generic(
+            policy,
+            files.iter().map(|file| file.size).sum(),
+            &generic_findings,
+        ));
+    }
     if let (Some(policy), Some(ipa)) = (policy.as_ref(), ipa.as_ref()) {
         policy_violations.extend(evaluate_ipa(policy, ipa));
     }

@@ -70,6 +70,25 @@ cargo run -p bytetrawl-cli -- inspect ./app.exe --depth deep --output report.jso
 cargo run -p bytetrawl-cli -- inspect ./package --hash sha256 --strings --entropy
 ```
 
+### Release policies and CI
+
+ByteTrawl can apply the same versioned release policy to IPA, APK, APPX/MSIX,
+DEB, generic artifacts, and comparisons. Policies support built-in profiles
+(`balanced`, `strict`, and `store_release`), explicit rule allow/deny lists,
+severity overrides, and documented suppressions with optional expiry dates.
+
+```bash
+bytetrawl-cli inspect MyApp.ipa --depth deep \
+  --policy examples/policies/store-release.json \
+  --format sarif --output bytetrawl.sarif
+```
+
+Use [the store-release policy](examples/policies/store-release.json) as a
+starting point. [The GitHub Actions example](examples/github-actions/bytetrawl-audit.yml)
+shows policy enforcement, SARIF upload, and report retention. A policy failure
+returns exit status `2`; incomplete analysis and cancellation have distinct
+non-zero statuses.
+
 Expensive work is opt-in. `--depth standard` performs structural analysis; `--depth deep` additionally enables SHA-256, strings, entropy, signature inspection, and the dependency graph. Individual tasks can be enabled explicitly. Pressing Ctrl-C cancels through the same analysis cancellation token used by the core.
 
 Exit codes are `0` for a complete report, `1` for a fatal error, `2` when `--fail-on` reaches the requested finding severity, `4` when cancelled, and `5` for a usable but partial report. Output files are written atomically.

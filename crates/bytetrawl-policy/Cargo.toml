@@ -12,6 +12,8 @@ bytetrawl-android = { path = "../bytetrawl-android" }
 bytetrawl-windows = { path = "../bytetrawl-windows" }
 bytetrawl-linux = { path = "../bytetrawl-linux" }
 serde.workspace = true
+chrono.workspace = true
+indexmap.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

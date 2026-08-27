@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "profile": "store_release",
+  "max_artifact_bytes": 536870912,
+  "max_growth_bytes": 52428800,
+  "require_privacy_manifest": true,
+  "forbidden_architectures": ["i386", "x86_64"],
+  "forbidden_entitlements": ["get-task-allow"],
+  "fail_on_severity": "Medium",
+  "forbidden_android_permissions": ["android.permission.REQUEST_INSTALL_PACKAGES"],
+  "max_android_dex_methods": 200000,
+  "require_android_signature": true,
+  "forbidden_windows_capabilities": ["runFullTrust"],
+  "require_windows_package_signature": true,
+  "max_linux_installed_bytes": 1073741824,
+  "forbidden_linux_maintainer_scripts": ["preinst"],
+  "forbid_privileged_linux_files": true,
+  "disabled_rules": [],
+  "severity_overrides": {},
+  "suppressions": []
+}
