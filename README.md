@@ -107,6 +107,9 @@ ByteTrawl is being developed as a **safe static triage, comparison, and release-
 - Resizable Artifact Tree, inspector, and Details regions with virtualized tables for large inputs.
 - A compact **External Tools…** menu shows compatible installed integrations first, distinguishes GUI launchers from captured command-line tools, and summarizes unavailable integrations without filling the Details pane with disabled buttons.
 - Workspaces preserve the artifact path, selected view, bookmarks, notes, and cached analysis results.
+- **File → Open Release Policy…** applies the same versioned IPA, Android, Windows,
+  Linux, and comparison policy engine used by the CLI and presents violations in
+  a dedicated Policy tab (`⌥⌘P`).
 
 ## Implemented inspection workflow
 

@@ -856,6 +856,7 @@ dependencies = [
  "bytetrawl-format",
  "bytetrawl-ios",
  "bytetrawl-linux",
+ "bytetrawl-policy",
  "bytetrawl-tools",
  "bytetrawl-windows",
  "gpui",

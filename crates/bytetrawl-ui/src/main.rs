@@ -16,6 +16,10 @@ use bytetrawl_core::{
 };
 use bytetrawl_ios::{IpaAuditReportV1, audit_ipa};
 use bytetrawl_linux::{DebianReportV1, audit_deb, is_deb};
+use bytetrawl_policy::{
+    PolicyViolation, ReleasePolicyV1, evaluate_android, evaluate_compare, evaluate_ipa,
+    evaluate_linux, evaluate_windows,
+};
 use bytetrawl_tools::{ToolAvailability, ToolBehavior, ToolRegistry};
 use bytetrawl_windows::{WindowsPackageReportV1, audit_msix, is_msix};
 use gpui::prelude::FluentBuilder;
@@ -45,6 +49,7 @@ actions!(
         OpenFile,
         OpenArtifact,
         OpenWorkspace,
+        OpenPolicy,
         CompareArtifacts,
         CompareFolders,
         NewWindow,
@@ -91,6 +96,7 @@ enum InspectorTab {
     LinuxSummary,
     LinuxFiles,
     LinuxFindings,
+    Policy,
     IpaSummary,
     IpaTargets,
     IpaPrivacy,
@@ -128,6 +134,7 @@ impl InspectorTab {
             Self::LinuxSummary => "Linux Summary",
             Self::LinuxFiles => "Installed Files",
             Self::LinuxFindings => "Linux Findings",
+            Self::Policy => "Policy",
             Self::IpaSummary => "Summary",
             Self::IpaTargets => "Targets",
             Self::IpaPrivacy => "Privacy",
@@ -164,6 +171,7 @@ impl InspectorTab {
             Self::LinuxSummary,
             Self::LinuxFiles,
             Self::LinuxFindings,
+            Self::Policy,
             Self::IpaSummary,
             Self::IpaTargets,
             Self::IpaPrivacy,
@@ -199,6 +207,8 @@ struct ByteTrawlApp {
     android_report: Option<Arc<AndroidAuditReportV1>>,
     windows_report: Option<Arc<WindowsPackageReportV1>>,
     linux_report: Option<Arc<DebianReportV1>>,
+    policy: Option<Arc<ReleasePolicyV1>>,
+    policy_path: Option<PathBuf>,
     selected: Option<uuid::Uuid>,
     expanded_nodes: std::collections::HashSet<uuid::Uuid>,
     analysis: Option<Arc<BinaryAnalysis>>,
@@ -267,6 +277,8 @@ impl ByteTrawlApp {
             android_report: None,
             windows_report: None,
             linux_report: None,
+            policy: None,
+            policy_path: None,
             selected: None,
             expanded_nodes: std::collections::HashSet::new(),
             analysis: None,
@@ -419,6 +431,51 @@ impl ByteTrawlApp {
             return;
         };
         self.load_workspace(path, cx);
+    }
+    fn open_policy(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("ByteTrawl Policy", &["json"])
+            .pick_file()
+        else {
+            return;
+        };
+        match std::fs::read(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
+        {
+            Ok(policy) => {
+                self.policy = Some(Arc::new(policy));
+                self.policy_path = Some(path.clone());
+                self.tab = InspectorTab::Policy;
+                self.status = format!("Policy loaded from {}", path.display()).into();
+            }
+            Err(error) => self.error = Some(format!("Could not load policy: {error}").into()),
+        }
+        cx.notify();
+    }
+    fn policy_violations(&self) -> Vec<PolicyViolation> {
+        let Some(policy) = self.policy.as_deref() else {
+            return Vec::new();
+        };
+        let mut violations = Vec::new();
+        if let Some(report) = self.comparison.as_deref() {
+            violations.extend(evaluate_compare(policy, report));
+        }
+        if let Some(report) = self.ipa_report.as_deref() {
+            violations.extend(evaluate_ipa(policy, report));
+        }
+        if let Some(report) = self.android_report.as_deref() {
+            violations.extend(evaluate_android(policy, report));
+        }
+        if let Some(report) = self.windows_report.as_deref() {
+            violations.extend(evaluate_windows(policy, report));
+        }
+        if let Some(report) = self.linux_report.as_deref() {
+            violations.extend(evaluate_linux(policy, report));
+        }
+        violations.sort_by(|left, right| left.rule_id.cmp(&right.rule_id));
+        violations.dedup();
+        violations
     }
     fn load_workspace(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         match Workspace::load(&path) {
@@ -1159,6 +1216,9 @@ impl ByteTrawlApp {
         if self.comparison.is_some() {
             tabs.push(InspectorTab::Compare);
         }
+        if self.policy.is_some() {
+            tabs.push(InspectorTab::Policy);
+        }
         let ipa_root_selected = self.ipa_report.is_some()
             && self.selected_node().is_some_and(|node| {
                 self.artifact
@@ -1794,6 +1854,7 @@ impl ByteTrawlApp {
             InspectorTab::LinuxSummary => self.render_linux_summary().into_any_element(),
             InspectorTab::LinuxFiles => self.render_linux_files(cx).into_any_element(),
             InspectorTab::LinuxFindings => self.render_linux_findings().into_any_element(),
+            InspectorTab::Policy => self.render_policy().into_any_element(),
             InspectorTab::IpaSummary => self.render_ipa_summary().into_any_element(),
             InspectorTab::IpaTargets => self.render_ipa_targets(cx).into_any_element(),
             InspectorTab::IpaPrivacy => self.render_ipa_privacy().into_any_element(),
@@ -3108,6 +3169,68 @@ impl ByteTrawlApp {
                 },
             ))
     }
+    fn render_policy(&self) -> impl IntoElement {
+        let violations = self.policy_violations();
+        let source = self
+            .policy_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "No policy loaded".into());
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(kv_panel(
+                "Release Policy",
+                vec![
+                    ("Source".into(), source),
+                    ("Violations".into(), violations.len().to_string()),
+                ],
+            ))
+            .when(violations.is_empty(), |panel| {
+                panel.child(info_panel(
+                    "Status",
+                    "The loaded policy has no violations for the current report.",
+                ))
+            })
+            .children(
+                violations
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, violation)| {
+                        div()
+                            .id(SharedString::from(format!("policy-violation-{index}")))
+                            .p_3()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(BORDER))
+                            .bg(rgb(PANEL))
+                            .child(
+                                div()
+                                    .font_semibold()
+                                    .text_color(rgb(match violation.severity {
+                                        Severity::Critical | Severity::High => DESTRUCTIVE,
+                                        Severity::Medium => WARNING,
+                                        _ => MUTED,
+                                    }))
+                                    .child(format!(
+                                        "{:?} · {}",
+                                        violation.severity, violation.rule_id
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(MUTED))
+                                    .child(violation.message),
+                            )
+                    }),
+            )
+            .into_any_element()
+    }
     fn render_overview(&self, node: &ArtifactNode) -> impl IntoElement {
         let a = self.current_analysis();
         let mut values = vec![
@@ -3387,6 +3510,7 @@ impl Render for ByteTrawlApp {
             .on_action(cx.listener(|this, _: &OpenFile, _, cx| this.choose(false, cx)))
             .on_action(cx.listener(|this, _: &OpenArtifact, _, cx| this.choose(true, cx)))
             .on_action(cx.listener(|this, _: &OpenWorkspace, _, cx| this.open_workspace(cx)))
+            .on_action(cx.listener(|this, _: &OpenPolicy, _, cx| this.open_policy(cx)))
             .on_action(cx.listener(|this, _: &SaveWorkspace, _, cx| this.save_workspace(cx)))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
                 this.search_input.focus_handle(cx).focus(window)
@@ -3927,6 +4051,12 @@ fn open_workspace_from_menu(_: &OpenWorkspace, cx: &mut App) {
     }
 }
 
+fn open_policy_from_menu(_: &OpenPolicy, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| this.open_policy(cx));
+    }
+}
+
 fn compare_artifacts_from_menu(_: &CompareArtifacts, cx: &mut App) {
     if let Some(view) = active_bytetrawl_view(cx) {
         view.update(cx, |this, cx| this.choose_comparison(false, cx));
@@ -4024,6 +4154,7 @@ fn install_menus(cx: &mut App) {
                 MenuItem::action("Open Folder…", OpenArtifact),
                 recent_menu,
                 MenuItem::action("Open Workspace…", OpenWorkspace),
+                MenuItem::action("Open Release Policy…", OpenPolicy),
                 MenuItem::separator(),
                 MenuItem::action("Compare Artifacts…", CompareArtifacts),
                 MenuItem::action("Compare Folders…", CompareFolders),
@@ -4099,6 +4230,7 @@ fn main() {
         cx.on_action(open_file_from_menu);
         cx.on_action(open_artifact_from_menu);
         cx.on_action(open_workspace_from_menu);
+        cx.on_action(open_policy_from_menu);
         cx.on_action(compare_artifacts_from_menu);
         cx.on_action(compare_folders_from_menu);
         cx.on_action(save_workspace_from_menu);
@@ -4108,6 +4240,7 @@ fn main() {
             KeyBinding::new("cmd-o", OpenFile, None),
             KeyBinding::new("cmd-shift-o", OpenArtifact, None),
             KeyBinding::new("cmd-alt-o", OpenWorkspace, None),
+            KeyBinding::new("cmd-alt-p", OpenPolicy, None),
             KeyBinding::new("cmd-shift-c", CompareArtifacts, None),
             KeyBinding::new("cmd-s", SaveWorkspace, None),
             KeyBinding::new("cmd-f", FocusSearch, None),
