@@ -9,7 +9,7 @@ use bytetrawl_core::{
     ArtifactKind, ArtifactNode, BinaryAnalysis, DependencyGraph, FileSummary, Finding, Severity,
     SignatureInfo,
 };
-use bytetrawl_ios::{IpaAuditReportV1, audit_ipa};
+use bytetrawl_ios::{IpaAuditReportV1, IpaViewCompatibleReport, audit_ipa, ipa_view_compatible};
 use bytetrawl_policy::{PolicyViolation, ReleasePolicyV1, evaluate_compare, evaluate_ipa};
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -182,6 +182,8 @@ pub struct InspectionReport {
     pub dependency_graph: Option<DependencyGraph>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ipa: Option<IpaAuditReportV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipa_view_compatibility: Option<IpaViewCompatibleReport>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub policy_violations: Vec<PolicyViolation>,
     pub findings: Vec<ReportFinding>,
@@ -603,6 +605,7 @@ pub fn inspect(
     } else {
         Vec::new()
     };
+    let ipa_view_compatibility = ipa.as_ref().map(ipa_view_compatible);
     let partial = !run_errors.is_empty()
         || files.iter().any(|file| !file.errors.is_empty())
         || ipa.as_ref().is_some_and(|report| report.partial);
@@ -617,6 +620,7 @@ pub fn inspect(
         files,
         dependency_graph,
         ipa,
+        ipa_view_compatibility,
         policy_violations,
         findings,
         run: RunInfo {

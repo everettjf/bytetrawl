@@ -947,6 +947,19 @@ impl ByteTrawlApp {
         }
         self.select(id, cx);
     }
+    fn navigate_to_evidence(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        let Some(root) = self.artifact.as_deref() else {
+            return;
+        };
+        let mut ancestors = Vec::new();
+        let Some(id) = find_archive_member_with_ancestors(root, path, &mut ancestors) else {
+            self.error = Some(format!("Evidence node is unavailable: {}", path.display()).into());
+            cx.notify();
+            return;
+        };
+        self.expanded_nodes.extend(ancestors);
+        self.select(id, cx);
+    }
     fn current_analysis(&self) -> Option<&BinaryAnalysis> {
         let analysis = self.analysis.as_deref()?;
         self.active_slice
@@ -2202,7 +2215,7 @@ impl ByteTrawlApp {
         kv_panel("Provisioning & Entitlements", values).into_any_element()
     }
     fn render_ipa_findings(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows = self
+        let findings = self
             .ipa_report
             .as_deref()
             .map(|report| {
@@ -2210,28 +2223,80 @@ impl ByteTrawlApp {
                     .findings
                     .iter()
                     .map(|finding| {
-                        vec![
-                            format!("{:?}", finding.severity),
+                        (
+                            finding.severity,
                             finding.rule_id.clone(),
                             finding.title.clone(),
                             finding.description.clone(),
-                            finding
-                                .evidence
-                                .iter()
-                                .map(|item| item.path.display().to_string())
-                                .collect::<Vec<_>>()
-                                .join(" · "),
-                        ]
+                            finding.evidence.first().map(|item| item.path.clone()),
+                        )
                     })
-                    .collect()
+                    .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        table_panel(
-            "IPA Release Findings",
-            &["Severity", "Rule", "Finding", "Description", "Evidence"],
-            rows,
-            cx,
-        )
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(panel_title("IPA Release Findings"))
+            .when(findings.is_empty(), |panel| {
+                panel.child(info_panel(
+                    "Status",
+                    "No IPA release findings were produced.",
+                ))
+            })
+            .children(findings.into_iter().map(
+                |(severity, rule_id, title, description, evidence)| {
+                    let evidence_for_click = evidence.clone();
+                    div()
+                        .id(SharedString::from(format!("ipa-finding-{rule_id}")))
+                        .p_3()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(BORDER))
+                        .bg(rgb(PANEL))
+                        .when(evidence.is_some(), |card| {
+                            card.cursor_pointer()
+                                .hover(|style| style.bg(rgb(PANEL_2)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(path) = evidence_for_click.as_deref() {
+                                        this.navigate_to_evidence(path, cx);
+                                    }
+                                }))
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_semibold()
+                                        .text_color(rgb(match severity {
+                                            Severity::Critical | Severity::High => DESTRUCTIVE,
+                                            Severity::Medium => WARNING,
+                                            _ => MUTED,
+                                        }))
+                                        .child(format!("{severity:?}")),
+                                )
+                                .child(div().font_semibold().text_color(rgb(TEXT)).child(title))
+                                .child(div().text_xs().text_color(rgb(MUTED)).child(rule_id)),
+                        )
+                        .child(div().text_sm().text_color(rgb(MUTED)).child(description))
+                        .when_some(evidence, |card, path| {
+                            card.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(ACCENT))
+                                    .child(format!("Open evidence · {}", path.display())),
+                            )
+                        })
+                },
+            ))
     }
     fn render_overview(&self, node: &ArtifactNode) -> impl IntoElement {
         let a = self.current_analysis();
@@ -2679,6 +2744,26 @@ fn find_by_path<'a>(node: &'a ArtifactNode, path: &std::path::Path) -> Option<&'
     node.children
         .iter()
         .find_map(|child| find_by_path(child, path))
+}
+fn find_archive_member_with_ancestors(
+    node: &ArtifactNode,
+    member_path: &std::path::Path,
+    ancestors: &mut Vec<uuid::Uuid>,
+) -> Option<uuid::Uuid> {
+    if matches!(
+        node.source.as_ref(),
+        Some(bytetrawl_core::ArtifactSource::ArchiveMember { member_path: path, .. })
+            if path == member_path
+    ) {
+        return Some(node.id);
+    }
+    for child in &node.children {
+        if let Some(id) = find_archive_member_with_ancestors(child, member_path, ancestors) {
+            ancestors.push(node.id);
+            return Some(id);
+        }
+    }
+    None
 }
 fn kind_icon(kind: ArtifactKind) -> &'static str {
     match kind {

@@ -36,6 +36,7 @@ pub struct IpaFile {
     pub path: PathBuf,
     pub compressed_bytes: u64,
     pub installed_bytes: u64,
+    pub is_directory: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -105,21 +106,163 @@ pub struct IpaAuditReportV1 {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IpaViewCompatibleReport {
+    pub metadata: IpaViewMetadata,
+    pub total_bytes: i64,
+    pub files: Vec<IpaViewSizeEntry>,
+    pub frameworks: Vec<String>,
+    pub extensions: Vec<String>,
+    pub localizations: Vec<String>,
+    pub privacy_usage_descriptions: IndexMap<String, String>,
+    pub has_privacy_manifest: bool,
+    pub architectures: Vec<String>,
+    pub signing: Option<IpaViewSigning>,
+    pub findings: Vec<IpaViewFinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IpaViewMetadata {
+    pub name: String,
+    pub bundle_identifier: String,
+    pub version: String,
+    pub build: String,
+    pub minimum_os_version: Option<String>,
+    pub executable: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IpaViewSizeEntry {
+    pub path: String,
+    pub bytes: i64,
+    pub is_directory: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum IpaViewSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IpaViewFinding {
+    pub code: String,
+    pub severity: IpaViewSeverity,
+    pub title: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IpaViewSigning {
+    pub team_identifier: Option<String>,
+    pub application_identifier: Option<String>,
+    pub expiration_date: Option<DateTime<Utc>>,
+    pub entitlements: IndexMap<String, String>,
+}
+
+pub fn ipa_view_compatible(report: &IpaAuditReportV1) -> IpaViewCompatibleReport {
+    IpaViewCompatibleReport {
+        metadata: IpaViewMetadata {
+            name: report.metadata.name.clone().unwrap_or_default(),
+            bundle_identifier: report
+                .metadata
+                .bundle_identifier
+                .clone()
+                .unwrap_or_default(),
+            version: report.metadata.version.clone().unwrap_or_default(),
+            build: report.metadata.build.clone().unwrap_or_default(),
+            minimum_os_version: report.metadata.minimum_os_version.clone(),
+            executable: report.metadata.executable.clone(),
+        },
+        total_bytes: saturating_i64(report.total_bytes),
+        files: report
+            .files
+            .iter()
+            .map(|file| IpaViewSizeEntry {
+                path: file.path.to_string_lossy().into_owned(),
+                bytes: saturating_i64(file.installed_bytes),
+                is_directory: file.is_directory,
+            })
+            .collect(),
+        frameworks: report.frameworks.clone(),
+        extensions: report.extensions.clone(),
+        localizations: report.localizations.clone(),
+        privacy_usage_descriptions: report.privacy_usage_descriptions.clone(),
+        has_privacy_manifest: report.has_privacy_manifest,
+        architectures: report.architectures.clone(),
+        signing: report.signing.as_ref().map(|signing| IpaViewSigning {
+            team_identifier: signing.team_id.clone(),
+            application_identifier: signing.application_identifier.clone(),
+            expiration_date: signing.expiration,
+            entitlements: signing.entitlements.clone(),
+        }),
+        findings: report
+            .findings
+            .iter()
+            .filter(|finding| {
+                matches!(
+                    finding.code.as_str(),
+                    "missing-bundle-id"
+                        | "missing-version"
+                        | "missing-privacy-manifest"
+                        | "missing-executable"
+                        | "simulator-architecture"
+                        | "missing-provisioning-profile"
+                ) || finding.code.starts_with("weak-NS")
+            })
+            .map(|finding| IpaViewFinding {
+                code: finding.code.clone(),
+                severity: match finding.severity {
+                    Severity::Critical | Severity::High => IpaViewSeverity::Error,
+                    Severity::Medium => IpaViewSeverity::Warning,
+                    Severity::Low | Severity::Info => IpaViewSeverity::Info,
+                },
+                title: finding.title.clone(),
+                detail: finding.description.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn saturating_i64(value: u64) -> i64 {
+    value.min(i64::MAX as u64) as i64
+}
+
 pub fn audit_ipa(artifact: &ArtifactNode, cancel: &CancellationToken) -> Result<IpaAuditReportV1> {
     cancel.check()?;
     let source_path = artifact.path.clone();
     let source_sha256 = hash_source(&source_path, cancel)?;
     let nodes = flatten_nodes(artifact);
-    let main_app = find_main_app(artifact).ok_or_else(|| {
-        ByteTrawlError::Malformed("IPA has no Payload/*.app bundle with Info.plist".into())
-    })?;
+    let payload = artifact
+        .children
+        .iter()
+        .find(|node| node.name == "Payload")
+        .ok_or_else(|| {
+            ByteTrawlError::Malformed("The archive does not contain a Payload directory.".into())
+        })?;
+    let main_app = payload
+        .children
+        .iter()
+        .find(|node| node.kind == ArtifactKind::Application)
+        .ok_or_else(|| ByteTrawlError::Malformed("No .app bundle was found in Payload.".into()))?;
     let main_prefix = member_path(main_app).ok_or_else(|| {
         ByteTrawlError::Malformed("IPA application is not backed by an archive member".into())
     })?;
-    let info_node = child_named(main_app, "Info.plist")
-        .ok_or_else(|| ByteTrawlError::Malformed("main app has no Info.plist".into()))?;
-    let info = read_plist(info_node)?;
-    let metadata = metadata_from_plist(&info);
+    let info_node = child_named(main_app, "Info.plist").ok_or_else(|| {
+        ByteTrawlError::Malformed("The app bundle does not contain Info.plist.".into())
+    })?;
+    let info = read_plist(info_node)
+        .map_err(|_| ByteTrawlError::Malformed("Info.plist could not be decoded.".into()))?;
+    let mut metadata = metadata_from_plist(&info);
+    if metadata.name.is_none() {
+        metadata.name = Some(main_app.name.trim_end_matches(".app").to_owned());
+    }
 
     let mut files = Vec::new();
     let mut compressed_bytes = 0u64;
@@ -134,16 +277,24 @@ pub fn audit_ipa(artifact: &ArtifactNode, cancel: &CancellationToken) -> Result<
         let Some(path) = member_path(node) else {
             continue;
         };
+        if path == main_prefix || !path.starts_with(&main_prefix) {
+            continue;
+        }
+        let relative_path = path
+            .strip_prefix(&main_prefix)
+            .unwrap_or(&path)
+            .to_path_buf();
+        let (compressed, installed) = source_sizes(node);
         if node.is_file() {
-            let (compressed, installed) = source_sizes(node);
             compressed_bytes = compressed_bytes.saturating_add(compressed);
             total_bytes = total_bytes.saturating_add(installed);
-            files.push(IpaFile {
-                path: path.clone(),
-                compressed_bytes: compressed,
-                installed_bytes: installed,
-            });
         }
+        files.push(IpaFile {
+            path: relative_path,
+            compressed_bytes: compressed,
+            installed_bytes: installed,
+            is_directory: node.is_dir(),
+        });
         if node.kind == ArtifactKind::Framework {
             frameworks.push(relative_to(&path, &main_prefix));
         } else if node
@@ -178,10 +329,15 @@ pub fn audit_ipa(artifact: &ArtifactNode, cancel: &CancellationToken) -> Result<
         .unwrap_or_default();
     let privacy_usage_descriptions = usage_descriptions(&info);
     let has_privacy_manifest = subtree_contains(main_app, "PrivacyInfo.xcprivacy");
-    let signing = child_named(main_app, "embedded.mobileprovision")
-        .map(parse_mobileprovision)
-        .transpose()
-        .map_err(|error| ByteTrawlError::Malformed(format!("mobile provisioning: {error}")))?;
+    let signing = match child_named(main_app, "embedded.mobileprovision").map(parse_mobileprovision)
+    {
+        Some(Ok(signing)) => Some(signing),
+        Some(Err(error)) => {
+            errors.push(format!("embedded.mobileprovision: {error}"));
+            None
+        }
+        None => None,
+    };
     let targets = collect_targets(main_app, &metadata, &architectures, &mut errors, cancel)?;
     let privacy_manifests = targets
         .iter()
@@ -249,17 +405,6 @@ fn flatten_nodes(root: &ArtifactNode) -> Vec<&ArtifactNode> {
     let mut nodes = Vec::new();
     visit(root, &mut nodes);
     nodes
-}
-
-fn find_main_app(root: &ArtifactNode) -> Option<&ArtifactNode> {
-    root.children
-        .iter()
-        .find(|node| node.name == "Payload")?
-        .children
-        .iter()
-        .find(|node| {
-            node.kind == ArtifactKind::Application && child_named(node, "Info.plist").is_some()
-        })
 }
 
 fn child_named<'a>(node: &'a ArtifactNode, name: &str) -> Option<&'a ArtifactNode> {
@@ -356,7 +501,15 @@ fn architectures_for(node: &ArtifactNode, errors: &mut Vec<String>) -> Vec<Strin
                 .map(|slice| slice.architecture)
                 .collect()
         };
-        values.retain(|value| !value.is_empty());
+        values = values
+            .into_iter()
+            .map(|value| {
+                value
+                    .split_once(" (subtype ")
+                    .map_or(value.clone(), |(architecture, _)| architecture.to_owned())
+            })
+            .filter(|value| !value.is_empty())
+            .collect();
         values.sort();
         values.dedup();
         Result::<Vec<String>>::Ok(values)
@@ -597,16 +750,18 @@ fn evaluate_rules(report: &IpaAuditReportV1, app_path: &Path) -> Vec<IpaFinding>
             "missing-bundle-id",
             Severity::High,
             "Missing bundle identifier",
-            "CFBundleIdentifier is absent or empty.",
+            "CFBundleIdentifier is empty.",
             evidence(&info, Some("CFBundleIdentifier"), None),
         ));
     }
-    if report.metadata.version.as_deref().unwrap_or("").is_empty() {
+    if report.metadata.version.as_deref().unwrap_or("").is_empty()
+        || report.metadata.build.as_deref().unwrap_or("").is_empty()
+    {
         findings.push(finding(
             "missing-version",
-            Severity::Medium,
-            "Missing marketing version",
-            "CFBundleShortVersionString is absent or empty.",
+            Severity::High,
+            "Missing version",
+            "Both marketing version and build number are required.",
             evidence(&info, Some("CFBundleShortVersionString"), None),
         ));
     }
@@ -614,23 +769,17 @@ fn evaluate_rules(report: &IpaAuditReportV1, app_path: &Path) -> Vec<IpaFinding>
         findings.push(finding(
             "missing-privacy-manifest",
             Severity::Medium,
-            "Missing privacy manifest",
-            "The application bundle has no PrivacyInfo.xcprivacy.",
+            "No privacy manifest found",
+            "Review whether the app or embedded SDKs require PrivacyInfo.xcprivacy.",
             evidence(app_path, None, None),
         ));
     }
-    if report
-        .metadata
-        .executable
-        .as_deref()
-        .unwrap_or("")
-        .is_empty()
-    {
+    if report.metadata.executable.is_none() || report.architectures.is_empty() {
         findings.push(finding(
             "missing-executable",
             Severity::High,
-            "Missing executable declaration",
-            "CFBundleExecutable is absent or empty.",
+            "Executable could not be inspected",
+            "Verify CFBundleExecutable and the Mach-O binary inside the app bundle.",
             evidence(&info, Some("CFBundleExecutable"), None),
         ));
     }
@@ -639,8 +788,8 @@ fn evaluate_rules(report: &IpaAuditReportV1, app_path: &Path) -> Vec<IpaFinding>
             findings.push(finding(
                 "simulator-architecture",
                 Severity::High,
-                "Simulator architecture in IPA",
-                "A simulator architecture is present in the main executable.",
+                "Simulator architecture included",
+                "App Store IPA files should not contain i386 or x86_64 executable slices.",
                 evidence(app_path, Some("architecture"), Some(architecture)),
             ));
         }
@@ -648,9 +797,9 @@ fn evaluate_rules(report: &IpaAuditReportV1, app_path: &Path) -> Vec<IpaFinding>
     if report.signing.is_none() {
         findings.push(finding(
             "missing-provisioning-profile",
-            Severity::Medium,
-            "Missing provisioning profile",
-            "The application has no embedded.mobileprovision.",
+            Severity::Info,
+            "Provisioning profile not found",
+            "App Store distributions may omit embedded.mobileprovision; development and ad hoc builds normally include it.",
             evidence(app_path, None, None),
         ));
     }
@@ -688,14 +837,15 @@ fn evaluate_rules(report: &IpaAuditReportV1, app_path: &Path) -> Vec<IpaFinding>
     for (key, value) in &report.privacy_usage_descriptions {
         if value.trim().chars().count() < 10 {
             findings.push(finding(
-                "weak-NS*UsageDescription",
-                Severity::Low,
-                "Weak privacy usage description",
-                "The usage description is too short to clearly explain the purpose.",
+                &format!("weak-{key}"),
+                Severity::Medium,
+                "Weak privacy explanation",
+                &format!("{key} should clearly explain why the data or capability is needed."),
                 evidence(&info, Some(key), Some(value)),
             ));
         }
     }
+    findings.sort_by(|left, right| left.code.cmp(&right.code));
     findings
 }
 
@@ -721,6 +871,73 @@ mod tests {
         .into_bytes()
     }
 
+    fn thin_macho(cpu_type: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0xfeedfacfu32.to_le_bytes());
+        bytes.extend_from_slice(&cpu_type.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes
+    }
+
+    fn fat_arm64_x86_64() -> Vec<u8> {
+        let arm64 = thin_macho(0x0100_000c);
+        let x86_64 = thin_macho(0x0100_0007);
+        let first_offset = 8 + 20 * 2;
+        let second_offset = first_offset + arm64.len();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0xcafe_babeu32.to_be_bytes());
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        for (cpu, offset, size) in [
+            (0x0100_000cu32, first_offset, arm64.len()),
+            (0x0100_0007u32, second_offset, x86_64.len()),
+        ] {
+            bytes.extend_from_slice(&cpu.to_be_bytes());
+            bytes.extend_from_slice(&0u32.to_be_bytes());
+            bytes.extend_from_slice(&(offset as u32).to_be_bytes());
+            bytes.extend_from_slice(&(size as u32).to_be_bytes());
+            bytes.extend_from_slice(&0u32.to_be_bytes());
+        }
+        bytes.extend_from_slice(&arm64);
+        bytes.extend_from_slice(&x86_64);
+        bytes
+    }
+
+    fn assert_ipaview_contract(report: &IpaAuditReportV1) {
+        let contract: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/ipa/ipaview-contract.json"
+        ))
+        .expect("parse shared IPAView contract");
+        let compatible = ipa_view_compatible(report);
+        for finding in compatible.findings {
+            let rule = contract["rules"]
+                .as_array()
+                .and_then(|rules| {
+                    rules.iter().find(|rule| {
+                        rule["code"].as_str() == Some(&finding.code)
+                            || rule["code_prefix"]
+                                .as_str()
+                                .is_some_and(|prefix| finding.code.starts_with(prefix))
+                    })
+                })
+                .unwrap_or_else(|| panic!("missing contract rule for {}", finding.code));
+            assert_eq!(
+                serde_json::to_value(&finding.severity).expect("serialize severity"),
+                rule["severity"]
+            );
+            assert_eq!(finding.title, rule["title"]);
+            if let Some(detail) = rule["detail"].as_str() {
+                assert_eq!(finding.detail, detail);
+            } else if let Some(suffix) = rule["detail_suffix"].as_str() {
+                assert!(finding.detail.ends_with(suffix));
+            }
+        }
+    }
+
     #[test]
     fn audits_identity_targets_sizes_privacy_signing_and_compatibility_rules() {
         let temporary = tempfile::tempdir().expect("create fixture directory");
@@ -737,8 +954,7 @@ mod tests {
              <key>NSCameraUsageDescription</key><string>Camera</string>",
         );
         add_file(&mut writer, "Payload/Fixture.app/Info.plist", &info);
-        let executable = std::fs::read(std::env::current_exe().expect("current executable"))
-            .expect("read Mach-O fixture");
+        let executable = thin_macho(0x0100_000c);
         add_file(&mut writer, "Payload/Fixture.app/Fixture", &executable);
         add_file(
             &mut writer,
@@ -796,6 +1012,7 @@ mod tests {
             Some("app.xnu.fixture")
         );
         assert_eq!(report.metadata.version.as_deref(), Some("2.3"));
+        assert_eq!(report.architectures, ["arm64"]);
         assert!(report.total_bytes > 0);
         assert!(report.compressed_bytes > 0);
         assert_eq!(report.localizations, ["en"]);
@@ -805,6 +1022,7 @@ mod tests {
                 .iter()
                 .any(|path| path.ends_with("Kit.framework"))
         );
+        assert_ipaview_contract(&report);
         assert!(
             report
                 .extensions
@@ -845,7 +1063,7 @@ mod tests {
             report
                 .findings
                 .iter()
-                .any(|finding| finding.code == "weak-NS*UsageDescription")
+                .any(|finding| finding.code == "weak-NSCameraUsageDescription")
         );
         assert!(
             !report
@@ -856,6 +1074,22 @@ mod tests {
         assert!(!report.partial, "unexpected errors: {:?}", report.errors);
         assert_eq!(report.source.sha256.len(), 64);
         serde_json::to_string_pretty(&report).expect("serialize stable report");
+        let compatibility = serde_json::to_value(ipa_view_compatible(&report))
+            .expect("serialize IPAView compatibility report");
+        assert_eq!(
+            compatibility["metadata"]["bundleIdentifier"],
+            "app.xnu.fixture"
+        );
+        assert_eq!(compatibility["totalBytes"], report.total_bytes);
+        assert!(compatibility["files"][0].get("isDirectory").is_some());
+        assert!(
+            compatibility["findings"]
+                .as_array()
+                .is_some_and(|findings| findings.iter().any(|finding| {
+                    finding["code"] == "weak-NSCameraUsageDescription"
+                        && finding["severity"] == "warning"
+                }))
+        );
     }
 
     #[test]
@@ -885,5 +1119,122 @@ mod tests {
                 "missing finding {expected}: {codes:?}"
             );
         }
+        assert_ipaview_contract(&report);
+    }
+
+    #[test]
+    fn identifies_fat_device_and_simulator_architectures() {
+        let temporary = tempfile::tempdir().expect("create fixture directory");
+        let ipa = temporary.path().join("Fat.ipa");
+        let file = std::fs::File::create(&ipa).expect("create IPA fixture");
+        let mut writer = zip::ZipWriter::new(file);
+        add_file(
+            &mut writer,
+            "Payload/Fat.app/Info.plist",
+            &plist(
+                "<key>CFBundleIdentifier</key><string>app.xnu.fat</string>\
+                 <key>CFBundleShortVersionString</key><string>1</string>\
+                 <key>CFBundleExecutable</key><string>Fat</string>",
+            ),
+        );
+        add_file(&mut writer, "Payload/Fat.app/Fat", &fat_arm64_x86_64());
+        writer.finish().expect("finish IPA fixture");
+        let artifact = open_artifact(&ipa, &CancellationToken::default()).expect("open IPA");
+        let report = audit_ipa(&artifact, &CancellationToken::default()).expect("audit IPA");
+        assert_eq!(report.architectures, ["arm64", "x86_64"]);
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.code == "simulator-architecture")
+        );
+        assert_ipaview_contract(&report);
+    }
+
+    #[test]
+    fn reports_distinct_ipa_structure_errors() {
+        let cases: &[(&str, &[(&str, &[u8])], &str)] = &[
+            (
+                "payload",
+                &[],
+                "The archive does not contain a Payload directory.",
+            ),
+            (
+                "app",
+                &[("Payload/readme.txt", b"readme")],
+                "No .app bundle was found in Payload.",
+            ),
+            (
+                "info",
+                &[("Payload/Fixture.app/Fixture", b"binary")],
+                "The app bundle does not contain Info.plist.",
+            ),
+            (
+                "invalid",
+                &[("Payload/Fixture.app/Info.plist", b"not a plist")],
+                "Info.plist could not be decoded.",
+            ),
+        ];
+        for (name, entries, expected) in cases {
+            let temporary = tempfile::tempdir().expect("create fixture directory");
+            let ipa = temporary.path().join(format!("{name}.ipa"));
+            let file = std::fs::File::create(&ipa).expect("create IPA fixture");
+            let mut writer = zip::ZipWriter::new(file);
+            for (path, bytes) in *entries {
+                add_file(&mut writer, path, bytes);
+            }
+            writer.finish().expect("finish IPA fixture");
+            let artifact = open_artifact(&ipa, &CancellationToken::default()).expect("open ZIP");
+            let error = audit_ipa(&artifact, &CancellationToken::default())
+                .expect_err("invalid IPA must fail");
+            assert!(
+                error.to_string().ends_with(expected),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn decodes_binary_info_plist() {
+        let temporary = tempfile::tempdir().expect("create fixture directory");
+        let ipa = temporary.path().join("BinaryPlist.ipa");
+        let file = std::fs::File::create(&ipa).expect("create IPA fixture");
+        let mut writer = zip::ZipWriter::new(file);
+        let mut dictionary = plist::Dictionary::new();
+        dictionary.insert(
+            "CFBundleIdentifier".into(),
+            Value::String("app.xnu.binary-plist".into()),
+        );
+        dictionary.insert(
+            "CFBundleShortVersionString".into(),
+            Value::String("1.0".into()),
+        );
+        dictionary.insert("CFBundleVersion".into(), Value::String("1".into()));
+        dictionary.insert(
+            "CFBundleExecutable".into(),
+            Value::String("BinaryPlist".into()),
+        );
+        let mut binary_plist = Vec::new();
+        Value::Dictionary(dictionary)
+            .to_writer_binary(&mut binary_plist)
+            .expect("encode binary plist");
+        add_file(
+            &mut writer,
+            "Payload/BinaryPlist.app/Info.plist",
+            &binary_plist,
+        );
+        add_file(
+            &mut writer,
+            "Payload/BinaryPlist.app/BinaryPlist",
+            &thin_macho(0x0100_000c),
+        );
+        writer.finish().expect("finish IPA fixture");
+        let artifact = open_artifact(&ipa, &CancellationToken::default()).expect("open IPA");
+        let report = audit_ipa(&artifact, &CancellationToken::default()).expect("audit IPA");
+        assert_eq!(
+            report.metadata.bundle_identifier.as_deref(),
+            Some("app.xnu.binary-plist")
+        );
+        assert_eq!(report.architectures, ["arm64"]);
     }
 }

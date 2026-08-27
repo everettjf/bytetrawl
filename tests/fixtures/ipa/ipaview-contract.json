@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "report_keys": [
+    "metadata",
+    "totalBytes",
+    "files",
+    "frameworks",
+    "extensions",
+    "localizations",
+    "privacyUsageDescriptions",
+    "hasPrivacyManifest",
+    "architectures",
+    "signing",
+    "findings"
+  ],
+  "rules": [
+    {
+      "code": "missing-bundle-id",
+      "severity": "error",
+      "title": "Missing bundle identifier",
+      "detail": "CFBundleIdentifier is empty."
+    },
+    {
+      "code": "missing-version",
+      "severity": "error",
+      "title": "Missing version",
+      "detail": "Both marketing version and build number are required."
+    },
+    {
+      "code": "missing-privacy-manifest",
+      "severity": "warning",
+      "title": "No privacy manifest found",
+      "detail": "Review whether the app or embedded SDKs require PrivacyInfo.xcprivacy."
+    },
+    {
+      "code": "missing-executable",
+      "severity": "error",
+      "title": "Executable could not be inspected",
+      "detail": "Verify CFBundleExecutable and the Mach-O binary inside the app bundle."
+    },
+    {
+      "code": "simulator-architecture",
+      "severity": "error",
+      "title": "Simulator architecture included",
+      "detail": "App Store IPA files should not contain i386 or x86_64 executable slices."
+    },
+    {
+      "code": "missing-provisioning-profile",
+      "severity": "info",
+      "title": "Provisioning profile not found",
+      "detail": "App Store distributions may omit embedded.mobileprovision; development and ad hoc builds normally include it."
+    },
+    {
+      "code_prefix": "weak-NS",
+      "severity": "warning",
+      "title": "Weak privacy explanation",
+      "detail_suffix": "should clearly explain why the data or capability is needed."
+    }
+  ]
+}
