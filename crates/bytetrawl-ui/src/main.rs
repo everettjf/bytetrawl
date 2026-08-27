@@ -2138,10 +2138,10 @@ impl Render for ByteTrawlApp {
                             .border_color(rgb(BORDER))
                             .child(
                                 div()
-                                    .h(px(28.))
+                                    .h(px(26.))
                                     .flex_1()
                                     .min_w(px(240.))
-                                    .child(Input::new(&self.search_input)),
+                                    .child(Input::new(&self.search_input).xsmall()),
                             )
                             .child(
                                 Button::new("search-all")
