@@ -28,3 +28,4 @@ uuid.workspace = true
 chrono.workspace = true
 zip.workspace = true
 imagesize.workspace = true
+crc32fast.workspace = true

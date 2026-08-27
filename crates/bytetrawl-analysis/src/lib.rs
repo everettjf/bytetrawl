@@ -98,6 +98,16 @@ impl ArtifactReader {
     }
 
     pub fn read_range(&self, offset: u64, length: usize) -> Result<Vec<u8>> {
+        self.read_range_cancellable(offset, length, &CancellationToken::default())
+    }
+
+    pub fn read_range_cancellable(
+        &self,
+        offset: u64,
+        length: usize,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<u8>> {
+        cancel.check()?;
         let available = self.length.saturating_sub(offset);
         let requested = length.min(available.min(usize::MAX as u64) as usize);
         match &self.source {
@@ -117,12 +127,14 @@ impl ArtifactReader {
                         path: path.clone(),
                         source,
                     })?;
+                cancel.check()?;
                 Ok(bytes)
             }
             ArtifactSource::ArchiveMember {
                 container,
                 member_path,
                 entry_index,
+                crc32,
                 is_directory,
                 ..
             } => {
@@ -148,26 +160,53 @@ impl ArtifactReader {
                         "archive member index no longer matches its path".into(),
                     ));
                 }
-                if offset > 0 {
-                    std::io::copy(&mut entry.by_ref().take(offset), &mut std::io::sink()).map_err(
-                        |source| ByteTrawlError::Io {
+                let mut skipped = 0u64;
+                let mut scratch = [0u8; 64 * 1024];
+                while skipped < offset {
+                    cancel.check()?;
+                    let remaining = (offset - skipped).min(scratch.len() as u64) as usize;
+                    let count = entry.read(&mut scratch[..remaining]).map_err(|source| {
+                        ByteTrawlError::Io {
                             path: container.clone(),
                             source,
-                        },
-                    )?;
+                        }
+                    })?;
+                    if count == 0 {
+                        return Err(ByteTrawlError::Malformed(
+                            "archive member ended while seeking".into(),
+                        ));
+                    }
+                    skipped += count as u64;
                 }
                 let mut bytes = Vec::with_capacity(requested);
-                entry
-                    .take(requested as u64)
-                    .read_to_end(&mut bytes)
-                    .map_err(|source| ByteTrawlError::Io {
-                        path: container.clone(),
-                        source,
+                while bytes.len() < requested {
+                    cancel.check()?;
+                    let remaining = (requested - bytes.len()).min(scratch.len());
+                    let count = entry.read(&mut scratch[..remaining]).map_err(|source| {
+                        ByteTrawlError::Io {
+                            path: container.clone(),
+                            source,
+                        }
                     })?;
+                    if count == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&scratch[..count]);
+                }
+                cancel.check()?;
                 if bytes.len() != requested {
                     return Err(ByteTrawlError::Malformed(format!(
                         "archive member ended after {} of {requested} requested bytes",
                         bytes.len()
+                    )));
+                }
+                if offset == 0
+                    && requested as u64 == self.length
+                    && crc32fast::hash(&bytes) != *crc32
+                {
+                    return Err(ByteTrawlError::Malformed(format!(
+                        "archive member CRC32 does not match {:08x}",
+                        crc32
                     )));
                 }
                 Ok(bytes)
@@ -2103,7 +2142,7 @@ pub fn hash_node(
     let mut offset = 0u64;
     while offset < reader.len() {
         cancel.check()?;
-        let bytes = reader.read_range(offset, 1024 * 1024)?;
+        let bytes = reader.read_range_cancellable(offset, 1024 * 1024, cancel)?;
         if bytes.is_empty() {
             break;
         }
@@ -3464,5 +3503,83 @@ mod tests {
             Err(ByteTrawlError::Cancelled)
         ));
         std::fs::remove_file(path).expect("remove ZIP fixture");
+    }
+
+    #[test]
+    fn archive_reader_rejects_crc_corruption() {
+        let path = std::env::temp_dir().join(format!(
+            "bytetrawl-corrupt-crc-{}.zip",
+            uuid::Uuid::new_v4()
+        ));
+        let payload = b"unique-byte-trawl-crc-payload";
+        let file = File::create(&path).expect("create CRC fixture");
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file(
+                "payload.bin",
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored),
+            )
+            .expect("start CRC member");
+        writer.write_all(payload).expect("write CRC member");
+        writer.finish().expect("finish CRC fixture");
+
+        let mut bytes = std::fs::read(&path).expect("read CRC fixture");
+        let payload_offset = bytes
+            .windows(payload.len())
+            .position(|candidate| candidate == payload)
+            .expect("find stored payload");
+        bytes[payload_offset] ^= 0xff;
+        std::fs::write(&path, bytes).expect("corrupt CRC fixture");
+
+        let artifact = open_artifact(&path, &CancellationToken::default())
+            .expect("central directory remains readable");
+        let member = artifact
+            .files()
+            .find(|node| node.name == "payload.bin")
+            .expect("find corrupt member");
+        assert!(
+            ArtifactReader::open(member)
+                .expect("open corrupt member")
+                .read_all(payload.len() as u64)
+                .is_err()
+        );
+        std::fs::remove_file(path).expect("remove CRC fixture");
+    }
+
+    #[test]
+    fn archive_reader_honors_cancellation_before_inflate() {
+        let path = std::env::temp_dir().join(format!(
+            "bytetrawl-cancel-inflate-{}.zip",
+            uuid::Uuid::new_v4()
+        ));
+        let file = File::create(&path).expect("create cancellation fixture");
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file(
+                "payload.bin",
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated),
+            )
+            .expect("start cancellation member");
+        writer
+            .write_all(&vec![0u8; 1024 * 1024])
+            .expect("write cancellation member");
+        writer.finish().expect("finish cancellation fixture");
+        let artifact =
+            open_artifact(&path, &CancellationToken::default()).expect("open cancellation fixture");
+        let member = artifact
+            .files()
+            .find(|node| node.name == "payload.bin")
+            .expect("find cancellation member");
+        let cancellation = CancellationToken::default();
+        cancellation.cancel();
+        assert!(matches!(
+            ArtifactReader::open(member)
+                .expect("open cancellation member")
+                .read_range_cancellable(0, 1024 * 1024, &cancellation),
+            Err(ByteTrawlError::Cancelled)
+        ));
+        std::fs::remove_file(path).expect("remove cancellation fixture");
     }
 }

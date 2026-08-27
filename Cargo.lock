@@ -875,6 +875,7 @@ dependencies = [
  "bytetrawl-format",
  "bytetrawl-signature",
  "chrono",
+ "crc32fast",
  "flate2",
  "goblin",
  "hex",
