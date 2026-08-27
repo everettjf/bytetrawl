@@ -17,5 +17,8 @@
   "forbid_privileged_linux_files": true,
   "disabled_rules": [],
   "severity_overrides": {},
-  "suppressions": []
+  "suppressions": [],
+  "forbid_new_entitlements": true,
+  "forbid_new_findings": true,
+  "forbidden_added_architectures": ["i386", "x86_64"]
 }

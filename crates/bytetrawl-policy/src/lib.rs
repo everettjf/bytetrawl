@@ -46,6 +46,12 @@ pub struct ReleasePolicyV1 {
     pub severity_overrides: IndexMap<String, Severity>,
     #[serde(default)]
     pub suppressions: Vec<RuleSuppression>,
+    #[serde(default)]
+    pub forbid_new_entitlements: bool,
+    #[serde(default)]
+    pub forbid_new_findings: bool,
+    #[serde(default)]
+    pub forbidden_added_architectures: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -194,6 +200,38 @@ pub fn evaluate_compare(
             severity: Severity::High,
             message: format!("size growth {} exceeds policy maximum", report.delta_bytes),
         });
+    }
+    if let Some(ipa) = report.ipa.as_ref() {
+        if policy.forbid_new_entitlements {
+            violations.extend(
+                ipa.entitlements
+                    .iter()
+                    .filter(|change| change.before.is_none() && change.after.is_some())
+                    .map(|change| PolicyViolation {
+                        rule_id: "policy.forbid-new-entitlements".into(),
+                        severity: Severity::High,
+                        message: format!("new entitlement {} is forbidden", change.field),
+                    }),
+            );
+        }
+        if policy.forbid_new_findings {
+            violations.extend(ipa.findings.added.iter().map(|finding| PolicyViolation {
+                rule_id: "policy.forbid-new-findings".into(),
+                severity: Severity::High,
+                message: format!("new finding {finding} is forbidden"),
+            }));
+        }
+        violations.extend(
+            ipa.architectures
+                .added
+                .iter()
+                .filter(|architecture| policy.forbidden_added_architectures.contains(architecture))
+                .map(|architecture| PolicyViolation {
+                    rule_id: "policy.forbidden-added-architecture".into(),
+                    severity: Severity::High,
+                    message: format!("new architecture {architecture} is forbidden"),
+                }),
+        );
     }
     finalize(policy, violations)
 }

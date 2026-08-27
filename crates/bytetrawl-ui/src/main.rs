@@ -2364,6 +2364,18 @@ impl ByteTrawlApp {
                 ]
             })
             .collect();
+        let type_rows = report
+            .type_deltas
+            .iter()
+            .map(|item| {
+                vec![
+                    item.file_type.clone(),
+                    format_size(item.before_bytes),
+                    format_size(item.after_bytes),
+                    format_signed_size(item.delta_bytes),
+                ]
+            })
+            .collect();
         div()
             .flex_1()
             .min_h_0()
@@ -2387,6 +2399,12 @@ impl ByteTrawlApp {
                 "Directory Size Changes",
                 &["Directory", "Before", "After", "Delta"],
                 directory_rows,
+                cx,
+            ))
+            .child(table_panel(
+                "Size by File Type",
+                &["Type", "Before", "After", "Delta"],
+                type_rows,
                 cx,
             ))
             .child(table_panel(

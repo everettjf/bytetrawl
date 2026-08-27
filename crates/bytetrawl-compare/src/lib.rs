@@ -50,6 +50,14 @@ pub struct DuplicateGroup {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TypeDelta {
+    pub file_type: String,
+    pub before_bytes: u64,
+    pub after_bytes: u64,
+    pub delta_bytes: i128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ValueChange {
     pub field: String,
     pub before: Option<String>,
@@ -88,6 +96,7 @@ pub struct CompareReportV1 {
     pub moved_files: Vec<FileMove>,
     pub directory_deltas: Vec<DirectoryDelta>,
     pub duplicate_groups: Vec<DuplicateGroup>,
+    pub type_deltas: Vec<TypeDelta>,
     pub largest_growth: Vec<FileChange>,
     pub ipa: Option<IpaChanges>,
 }
@@ -203,6 +212,7 @@ pub fn compare_artifacts(
         moved_files,
         directory_deltas: directory_deltas(&before_files, &after_files),
         duplicate_groups: duplicate_groups(&after_files),
+        type_deltas: type_deltas(&before_files, &after_files),
         largest_growth,
         ipa: before_ipa
             .zip(after_ipa)
@@ -324,6 +334,55 @@ fn duplicate_groups(files: &IndexMap<PathBuf, FileSnapshot>) -> Vec<DuplicateGro
             .then(left.sha256.cmp(&right.sha256))
     });
     duplicates
+}
+
+fn file_type(path: &Path) -> String {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| !extension.is_empty())
+        .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
+        .unwrap_or_else(|| "No extension".into())
+}
+
+fn type_sizes(files: &IndexMap<PathBuf, FileSnapshot>) -> IndexMap<String, u64> {
+    let mut sizes = IndexMap::new();
+    for (path, snapshot) in files {
+        *sizes.entry(file_type(path)).or_default() += snapshot.size;
+    }
+    sizes
+}
+
+fn type_deltas(
+    before: &IndexMap<PathBuf, FileSnapshot>,
+    after: &IndexMap<PathBuf, FileSnapshot>,
+) -> Vec<TypeDelta> {
+    let before_sizes = type_sizes(before);
+    let after_sizes = type_sizes(after);
+    let types = before_sizes
+        .keys()
+        .chain(after_sizes.keys())
+        .cloned()
+        .collect::<IndexSet<_>>();
+    let mut deltas = types
+        .into_iter()
+        .map(|file_type| {
+            let before_bytes = before_sizes.get(&file_type).copied().unwrap_or_default();
+            let after_bytes = after_sizes.get(&file_type).copied().unwrap_or_default();
+            TypeDelta {
+                file_type,
+                before_bytes,
+                after_bytes,
+                delta_bytes: after_bytes as i128 - before_bytes as i128,
+            }
+        })
+        .collect::<Vec<_>>();
+    deltas.sort_by(|left, right| {
+        right
+            .after_bytes
+            .cmp(&left.after_bytes)
+            .then(left.file_type.cmp(&right.file_type))
+    });
+    deltas
 }
 
 fn logical_path(root: &ArtifactNode, node: &ArtifactNode) -> Option<PathBuf> {
