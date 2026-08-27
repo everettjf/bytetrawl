@@ -36,6 +36,7 @@ actions!(
         OpenFile,
         OpenArtifact,
         OpenWorkspace,
+        NewWindow,
         SaveWorkspace,
         FocusSearch,
         Quit
@@ -2600,13 +2601,43 @@ fn quit(_: &Quit, cx: &mut App) {
     cx.quit();
 }
 
+fn open_bytetrawl_window(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: point(px(80.), px(60.)),
+                    size: size(px(1440.), px(900.)),
+                })),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("ByteTrawl".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            |window, cx| {
+                let view = cx.new(|cx| ByteTrawlApp::new(window, cx));
+                cx.new(|cx| Root::new(view, window, cx))
+            },
+        )?;
+        anyhow::Ok(())
+    })
+    .detach();
+}
+
+fn new_window(_: &NewWindow, cx: &mut App) {
+    open_bytetrawl_window(cx);
+}
+
 fn main() {
     Application::new().run(|cx| {
         gpui_component::init(cx);
         configure_component_theme(cx);
         cx.activate(true);
         cx.on_action(quit);
+        cx.on_action(new_window);
         cx.bind_keys([
+            KeyBinding::new("cmd-n", NewWindow, None),
             KeyBinding::new("cmd-o", OpenFile, None),
             KeyBinding::new("cmd-shift-o", OpenArtifact, None),
             KeyBinding::new("cmd-alt-o", OpenWorkspace, None),
@@ -2625,6 +2656,8 @@ fn main() {
             Menu {
                 name: "File".into(),
                 items: vec![
+                    MenuItem::action("New Window", NewWindow),
+                    MenuItem::separator(),
                     MenuItem::action("Open File…", OpenFile),
                     MenuItem::action("Open Folder…", OpenArtifact),
                     MenuItem::action("Open Workspace…", OpenWorkspace),
@@ -2648,27 +2681,11 @@ fn main() {
                 name: "View".into(),
                 items: vec![MenuItem::action("Focus Search", FocusSearch)],
             },
+            Menu {
+                name: "Window".into(),
+                items: vec![],
+            },
         ]);
-        cx.spawn(async move |cx| {
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(Bounds {
-                        origin: point(px(80.), px(60.)),
-                        size: size(px(1440.), px(900.)),
-                    })),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("ByteTrawl".into()),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                |window, cx| {
-                    let view = cx.new(|cx| ByteTrawlApp::new(window, cx));
-                    cx.new(|cx| Root::new(view, window, cx))
-                },
-            )?;
-            anyhow::Ok(())
-        })
-        .detach()
+        open_bytetrawl_window(cx);
     })
 }
