@@ -80,9 +80,7 @@ pub fn audit_deb(path: &Path) -> Result<DebianReportV1> {
     let data_entries = read_tar_entries(&data_member.name, &data_member.data, false)?;
     let control_text = control_entries
         .iter()
-        .find(|entry| {
-            entry.path == PathBuf::from("control") || entry.path == PathBuf::from("./control")
-        })
+        .find(|entry| entry.path == Path::new("control") || entry.path == Path::new("./control"))
         .and_then(|entry| entry.contents.as_deref())
         .ok_or_else(|| ByteTrawlError::Malformed("Debian control file is missing".into()))?;
     let control_text = std::str::from_utf8(control_text)
@@ -436,7 +434,7 @@ mod tests {
         assert_eq!(header.len(), 60);
         output.extend_from_slice(header.as_bytes());
         output.extend_from_slice(bytes);
-        if bytes.len() % 2 != 0 {
+        if !bytes.len().is_multiple_of(2) {
             output.push(b'\n');
         }
     }

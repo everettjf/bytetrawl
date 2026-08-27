@@ -1,12 +1,12 @@
-# ByteTrawl 1.0.3
+# ByteTrawl 1.1.0
 
-[![Version](https://img.shields.io/badge/version-1.0.3-9acf68?style=flat-square)](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.0.3)
+[![Version](https://img.shields.io/badge/version-1.1.0-9acf68?style=flat-square)](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.1.0)
 [![macOS](https://img.shields.io/badge/macOS-13%2B-d69b51?style=flat-square)](#requirements)
 [![License](https://img.shields.io/badge/license-Apache--2.0-d7d3c6?style=flat-square)](LICENSE)
 
 ByteTrawl is a cross-platform, static application and binary inspection workbench written in Rust. It treats applications, directories, packages, and individual files as logical Artifacts, then presents their structure and PE, Mach-O, or ELF details through one host-independent analysis model.
 
-**Current release:** [ByteTrawl 1.0.3](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.0.3) for Apple silicon Macs.
+**Current release:** [ByteTrawl 1.1.0](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.1.0) for Apple silicon Macs.
 
 ## Screenshots
 
@@ -26,10 +26,10 @@ Verify the CLI installation:
 
 ```sh
 bytetrawl-cli --version
-# bytetrawl-cli 1.0.3
+# bytetrawl-cli 1.1.0
 ```
 
-The 1.0.3 app bundle is Developer ID signed, Apple-notarized, and ships with a stapled notarization ticket so Gatekeeper can verify it without contacting Apple.
+The 1.1.0 app bundle is Developer ID signed, Apple-notarized, and ships with a stapled notarization ticket so Gatekeeper can verify it without contacting Apple.
 
 ### Release requirements
 
@@ -93,7 +93,7 @@ Expensive work is opt-in. `--depth standard` performs structural analysis; `--de
 
 Exit codes are `0` for a complete report, `1` for a fatal error, `2` when `--fail-on` reaches the requested finding severity, `4` when cancelled, and `5` for a usable but partial report. Output files are written atomically.
 
-Release binaries and Homebrew metadata are hosted in the public [homebrew-tap release](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.0.3), while the source repository remains private.
+Release binaries and Homebrew metadata are hosted in the public [homebrew-tap release](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.1.0), while the source repository remains private.
 
 ## Product direction
 
@@ -126,6 +126,14 @@ ByteTrawl is being developed as a **safe static triage, comparison, and release-
 - ZIP inspection reads only the central directory and reports unsafe paths, symbolic links, expansion ratio, and suspicious expanded size. It does not extract entries.
 - DMG and ISO disk images are recognized from container structure rather than extension. Their volume, partition, and compression metadata are inspected statically without mounting or extraction.
 - Static ar libraries, tar/tar.gz archives, and Apple XAR/flat PKG installers expose bounded member tables, declared sizes, link/path hazards, checksums, and embedded-signature counts without extracting payloads or launching Installer.
+- IPA release audits cover app identity, installed size, embedded targets, architectures,
+  localizations, privacy manifests, provisioning profiles, entitlements, findings, evidence
+  navigation, and an IPAView-compatible JSON projection.
+- Android APK, Windows APPX/MSIX, and Debian DEB release packs provide platform-specific identity,
+  permission/capability/dependency, signing or installation-risk findings in both desktop and CLI.
+- Artifact comparison uses exact SHA-256 content identity and reports added, removed, modified, and
+  moved files; directory and file-type growth; duplicates; and IPA privacy/signing/entitlement
+  changes. See the [versioned report schema](docs/report-schema.md).
 - Workspaces preserve the Artifact path, selected node/view, bookmarks, notes, and tool configuration model.
 - External tools are detected through `ToolRegistry`, launched only by explicit action, and bounded command output is captured in the Details pane where supported. Captured runs are cancellable, stop after 60 seconds, cap each output stream at 16 MiB, and terminate the child process on timeout.
 
@@ -133,7 +141,7 @@ Keyboard shortcuts on macOS: `⌘N` opens a new window, `⌘O` opens a file, `�
 
 ## Release verification
 
-ByteTrawl 1.0.3 was validated with the complete Rust workspace test suite, Homebrew strict Formula and Cask audits, a real Homebrew installation of both artifacts, the Formula test, archive integrity checks, arm64 binary inspection, version checks, strict `codesign` verification, Apple notarization, stapler validation, and Gatekeeper assessment.
+ByteTrawl 1.1.0 was validated with the complete Rust workspace test suite, Homebrew strict Formula and Cask audits, a real Homebrew installation of both artifacts, the Formula test, archive integrity checks, arm64 binary inspection, version checks, strict `codesign` verification, Apple notarization, stapler validation, and Gatekeeper assessment.
 
 ## Safety
 

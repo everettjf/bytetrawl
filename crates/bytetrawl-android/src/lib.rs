@@ -4,7 +4,7 @@ use bytetrawl_analysis::{ArtifactReader, CancellationToken};
 use bytetrawl_core::{ArtifactNode, ArtifactSource, ByteTrawlError, Result, Severity};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const MAX_MANIFEST_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_DEX_HEADER_BYTES: usize = 112;
@@ -121,7 +121,7 @@ pub fn audit_apk(
             dex.push(parse_dex_header(path.clone(), &header)?);
         } else if text.starts_with("lib/") && file_name.ends_with(".so") {
             native_libraries.push(path.clone());
-        } else if path == PathBuf::from("resources.arsc") {
+        } else if path == Path::new("resources.arsc") {
             resources_arsc_bytes = Some(node.size);
         } else if text.starts_with("META-INF/")
             && matches!(
@@ -714,7 +714,7 @@ fn member_path(node: &ArtifactNode) -> Option<PathBuf> {
 }
 
 fn find_member<'a>(node: &'a ArtifactNode, name: &str) -> Option<&'a ArtifactNode> {
-    if member_path(node).is_some_and(|path| path == PathBuf::from(name)) {
+    if member_path(node).is_some_and(|path| path == Path::new(name)) {
         return Some(node);
     }
     node.children

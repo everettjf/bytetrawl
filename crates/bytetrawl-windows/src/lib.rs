@@ -4,7 +4,7 @@ use bytetrawl_analysis::{ArtifactReader, CancellationToken};
 use bytetrawl_core::{ArtifactNode, ArtifactSource, ByteTrawlError, Result, Severity};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const MAX_MANIFEST_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -316,7 +316,7 @@ fn member_path(node: &ArtifactNode) -> Option<PathBuf> {
 }
 
 fn find_member<'a>(node: &'a ArtifactNode, name: &str) -> Option<&'a ArtifactNode> {
-    if member_path(node).is_some_and(|path| path == PathBuf::from(name)) {
+    if member_path(node).is_some_and(|path| path == Path::new(name)) {
         return Some(node);
     }
     node.children

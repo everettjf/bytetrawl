@@ -1153,7 +1153,8 @@ mod tests {
 
     #[test]
     fn reports_distinct_ipa_structure_errors() {
-        let cases: &[(&str, &[(&str, &[u8])], &str)] = &[
+        type StructureCase<'a> = (&'a str, &'a [(&'a str, &'a [u8])], &'a str);
+        let cases: &[StructureCase<'_>] = &[
             (
                 "payload",
                 &[],

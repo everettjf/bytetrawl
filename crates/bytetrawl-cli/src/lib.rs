@@ -330,13 +330,13 @@ pub fn compare(
     let after_ipa = is_ipa(&after)
         .then(|| audit_ipa(&after, cancellation))
         .transpose()?;
-    Ok(compare_artifacts(
+    compare_artifacts(
         &before,
         &after,
         before_ipa.as_ref(),
         after_ipa.as_ref(),
         cancellation,
-    )?)
+    )
 }
 
 fn is_ipa(artifact: &ArtifactNode) -> bool {

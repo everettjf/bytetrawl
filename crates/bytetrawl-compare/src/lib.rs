@@ -198,7 +198,7 @@ pub fn compare_artifacts(
         .filter(|change| change.delta_bytes > 0)
         .cloned()
         .collect::<Vec<_>>();
-    largest_growth.sort_by(|left, right| right.delta_bytes.cmp(&left.delta_bytes));
+    largest_growth.sort_by_key(|item| std::cmp::Reverse(item.delta_bytes));
     largest_growth.truncate(50);
     Ok(CompareReportV1 {
         schema_version: "1.1".into(),
@@ -614,7 +614,7 @@ mod tests {
             report
                 .directory_deltas
                 .iter()
-                .any(|delta| { delta.path == PathBuf::from("assets") && delta.delta_bytes == 6 })
+                .any(|delta| { delta.path == Path::new("assets") && delta.delta_bytes == 6 })
         );
         assert_eq!(report.largest_growth[0].path, PathBuf::from("a"));
         assert_eq!(report.largest_growth[0].delta_bytes, 20);
@@ -622,7 +622,7 @@ mod tests {
             report
                 .files
                 .iter()
-                .any(|change| change.path == PathBuf::from("same-size")
+                .any(|change| change.path == Path::new("same-size")
                     && change.kind == ChangeKind::Modified
                     && change.delta_bytes == 0)
         );
