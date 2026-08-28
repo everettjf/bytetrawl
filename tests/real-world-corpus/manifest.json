@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "artifacts": [
+    {
+      "id": "feather-ipa",
+      "file": "Feather.ipa",
+      "type": "ipa",
+      "source": "https://github.com/khcrysalis/Feather",
+      "license": "GPL-3.0",
+      "url": "https://github.com/claration/Feather/releases/download/v2.9.0/Feather.ipa",
+      "bytes": 14241853,
+      "sha256": "833c57d3c4bf4b4a9fe408be72e1c720cbb949f736a00286750f50e7915730ea",
+      "assertions": [
+        ".artifact.kind == \"package\"",
+        ".artifact.format == \"zip\"",
+        ".ipa.metadata.bundle_identifier == \"thewonderofyou.Feather\"",
+        "(.ipa.targets | length) >= 2",
+        "(.ipa.architectures | index(\"arm64\")) != null",
+        ".ipa.partial == false"
+      ]
+    },
+    {
+      "id": "appium-api-demos-apk",
+      "file": "ApiDemos-release.apk",
+      "type": "apk",
+      "source": "https://github.com/appium/android-apidemos",
+      "license": "NOASSERTION",
+      "url": "https://github.com/appium/android-apidemos/releases/download/v6.0.17/ApiDemos-release.apk",
+      "bytes": 5606631,
+      "sha256": "569e79d67ea1652653c4f00484ef63f00d215d4921ec14f6c10ec97db38e7b03",
+      "assertions": [
+        ".artifact.kind == \"package\"",
+        ".artifact.format == \"zip\"",
+        ".android.identity.package == \"io.appium.android.apis\"",
+        "(.android.permissions | length) >= 10",
+        "(.android.dex | length) >= 1",
+        ".android.dex[0].classes > 0",
+        ".android.partial == false"
+      ]
+    },
+    {
+      "id": "microsoft-existing-msix",
+      "file": "existingPackage.msix",
+      "type": "msix",
+      "source": "https://github.com/microsoft/msix-packaging",
+      "license": "MIT",
+      "url": "https://raw.githubusercontent.com/microsoft/msix-packaging/25a65f5c1690930813bcc10cdf1d59fa865f2bb1/tools/pipelines-tasks/test/assets/existingPackage.msix",
+      "bytes": 372416,
+      "sha256": "25c5a44ffa53cd45ecfbf036e097ce1fcb524deae2efc2acaf05679b8098724d",
+      "assertions": [
+        ".artifact.kind == \"package\"",
+        ".windows_package.identity.display_name == \"HelloWorldApp\"",
+        ".windows_package.identity.processor_architecture == \"x86\"",
+        "(.windows_package.applications | length) == 1",
+        "(.windows_package.capabilities | length) >= 1"
+      ]
+    },
+    {
+      "id": "tapa-dmg",
+      "file": "Tapa_0.2.3_aarch64.dmg",
+      "type": "dmg",
+      "source": "https://github.com/aryrabelo/tapa",
+      "license": "MIT",
+      "url": "https://github.com/aryrabelo/tapa/releases/download/v0.2.3/Tapa_0.2.3_aarch64.dmg",
+      "bytes": 6861895,
+      "sha256": "15557647d3ac39ea85002ce13e6c8a4f551da2ee60acc4a9a9c93fe9f2ae7ea3",
+      "assertions": [
+        ".artifact.kind == \"disk_image\"",
+        ".artifact.format == \"disk_image\"",
+        ".files[0].metadata[\"Disk Image Format\"] == \"Apple UDIF / DMG\"",
+        ".files[0].metadata[\"Partition Count\"] == \"8\""
+      ]
+    },
+    {
+      "id": "tapa-windows-pe",
+      "file": "Tapa_0.2.3_x64-setup.exe",
+      "type": "pe",
+      "source": "https://github.com/aryrabelo/tapa",
+      "license": "MIT",
+      "url": "https://github.com/aryrabelo/tapa/releases/download/v0.2.3/Tapa_0.2.3_x64-setup.exe",
+      "bytes": 2720687,
+      "sha256": "963456c08ec596cb589732f2630d4f08c1cb76eef1fb22a44e37d9d55c3ec0d2",
+      "assertions": [
+        ".artifact.kind == \"executable\"",
+        ".artifact.format == \"pe\"",
+        ".files[0].analysis.format == \"pe\"",
+        "(.files[0].analysis.sections | length) >= 4",
+        "(.files[0].analysis.imports | length) >= 1"
+      ]
+    },
+    {
+      "id": "tapa-deb",
+      "file": "Tapa_0.2.3_amd64.deb",
+      "type": "deb",
+      "source": "https://github.com/aryrabelo/tapa",
+      "license": "MIT",
+      "url": "https://github.com/aryrabelo/tapa/releases/download/v0.2.3/Tapa_0.2.3_amd64.deb",
+      "bytes": 4088204,
+      "sha256": "e7b86c4d2c96e37c4090084444d2fe1283511bfbeb86afaa98e1bed796c17b46",
+      "assertions": [
+        ".linux_package.identity.package == \"tapa\"",
+        ".linux_package.identity.architecture == \"amd64\"",
+        "(.linux_package.files | length) >= 10",
+        ".linux_package.installed_bytes > 1000000"
+      ]
+    },
+    {
+      "id": "jq-linux-elf",
+      "file": "jq-linux-amd64",
+      "type": "elf",
+      "source": "https://github.com/jqlang/jq",
+      "license": "MIT",
+      "url": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64",
+      "bytes": 2267912,
+      "sha256": "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f",
+      "assertions": [
+        ".artifact.kind == \"executable\"",
+        ".artifact.format == \"elf\"",
+        ".files[0].analysis.format == \"elf\"",
+        ".files[0].analysis.architecture == \"x86_64\"",
+        "(.files[0].analysis.sections | length) >= 20"
+      ]
+    },
+    {
+      "id": "tapa-rpm-identification",
+      "file": "Tapa-0.2.3-1.x86_64.rpm",
+      "type": "rpm",
+      "source": "https://github.com/aryrabelo/tapa",
+      "license": "MIT",
+      "url": "https://github.com/aryrabelo/tapa/releases/download/v0.2.3/Tapa-0.2.3-1.x86_64.rpm",
+      "bytes": 4089011,
+      "sha256": "e0fb41193eed8db81a8a29e744acf05e6f68673ea6c9308e0c55a224fe02dc22",
+      "assertions": [
+        ".artifact.kind == \"package\"",
+        ".artifact.format == \"unknown_binary\"",
+        ".linux_package == null"
+      ]
+    }
+  ]
+}

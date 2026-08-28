@@ -1,0 +1,36 @@
+name: Real-world artifact corpus
+
+on:
+  schedule:
+    - cron: "23 9 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-world-corpus
+  cancel-in-progress: false
+
+jobs:
+  inspect-public-artifacts:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: target/real-world-corpus/artifacts
+          key: real-world-corpus-${{ hashFiles('tests/real-world-corpus/manifest.json') }}
+      - name: Fetch, verify, and inspect pinned public artifacts
+        run: scripts/test-real-world-corpus.sh
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-world-corpus-reports
+          path: target/real-world-corpus/reports
+          if-no-files-found: ignore
+          retention-days: 14
