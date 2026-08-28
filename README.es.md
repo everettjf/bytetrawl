@@ -1,14 +1,13 @@
-# ByteTrawl 1.1.1
+# ByteTrawl
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Português (Brasil)](README.pt-BR.md) · **Español** · [Deutsch](README.de.md)
 
-[![Versión](https://img.shields.io/badge/version-1.1.1-9acf68?style=flat-square)](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.1.1)
 [![macOS](https://img.shields.io/badge/macOS-13%2B-d69b51?style=flat-square)](#requisitos)
 [![Licencia](https://img.shields.io/badge/license-Apache--2.0-d7d3c6?style=flat-square)](LICENSE)
 
 ByteTrawl es un banco de trabajo multiplataforma, escrito en Rust, para el triaje estático seguro, la comparación y la auditoría de publicación de artefactos de software. Modela aplicaciones, directorios, paquetes y archivos como Artifacts para inspeccionar su estructura, metadatos, firmas, dependencias y binarios PE, Mach-O y ELF sin ejecutar el contenido analizado.
 
-**Versión actual:** [ByteTrawl 1.1.1](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.1.1) para Mac con Apple silicon. El [README en inglés](README.md#detailed-support-matrix) es la fuente canónica y contiene la matriz de soporte más detallada y actual.
+El [README en inglés](README.md#detailed-support-matrix) es la fuente canónica y contiene la matriz de soporte más detallada y actual. Instala la versión más reciente con los comandos Homebrew siguientes o descarga los archivos desde [GitHub Releases](https://github.com/everettjf/homebrew-tap/releases).
 
 ## Capturas
 

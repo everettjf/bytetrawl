@@ -1,14 +1,13 @@
-# ByteTrawl 1.1.1
+# ByteTrawl
 
 [English](README.md) · [简体中文](README.zh-CN.md) · **日本語** · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md) · [Deutsch](README.de.md)
 
-[![Version](https://img.shields.io/badge/version-1.1.1-9acf68?style=flat-square)](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.1.1)
 [![macOS](https://img.shields.io/badge/macOS-13%2B-d69b51?style=flat-square)](#動作要件)
 [![License](https://img.shields.io/badge/license-Apache--2.0-d7d3c6?style=flat-square)](LICENSE)
 
 ByteTrawl は Rust で実装された、クロスプラットフォームのソフトウェア成果物向け静的トリアージ・比較・リリース監査ワークベンチです。アプリ、ディレクトリ、パッケージ、単体ファイルを Artifact として統一的に扱い、対象を実行せずに構造、メタデータ、署名、依存関係、PE／Mach-O／ELF を検査します。
 
-**現行リリース：** Apple silicon Mac 向け [ByteTrawl 1.1.1](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.1.1)。最新かつ詳細な項目別一覧は、正規版である英語の[サポートマトリクス](README.md#detailed-support-matrix)を参照してください。
+最新かつ詳細な項目別一覧は、正規版である英語の[サポートマトリクス](README.md#detailed-support-matrix)を参照してください。最新版は下記の Homebrew コマンド、または [GitHub Releases](https://github.com/everettjf/homebrew-tap/releases)から入手できます。
 
 ## スクリーンショット
 

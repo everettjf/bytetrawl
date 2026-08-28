@@ -1,14 +1,13 @@
-# ByteTrawl 1.1.1
+# ByteTrawl
 
 [English](README.md) · **简体中文** · [日本語](README.ja.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md) · [Deutsch](README.de.md)
 
-[![版本](https://img.shields.io/badge/version-1.1.1-9acf68?style=flat-square)](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.1.1)
 [![macOS](https://img.shields.io/badge/macOS-13%2B-d69b51?style=flat-square)](#系统要求)
 [![许可证](https://img.shields.io/badge/license-Apache--2.0-d7d3c6?style=flat-square)](LICENSE)
 
 ByteTrawl 是一个使用 Rust 编写的跨平台软件制品安全静态分诊、比较与发布审计工作台。它把应用、目录、发布包与单个文件统一建模为 Artifact，在不运行目标程序的情况下检查其结构、元数据、签名、依赖以及 PE、Mach-O 和 ELF 二进制内容。
 
-**当前版本：** 面向 Apple 芯片 Mac 的 [ByteTrawl 1.1.1](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.1.1)。英文 [README](README.md#detailed-support-matrix) 是能力清单的规范源，并包含最新、最详细的逐项支持矩阵。
+英文 [README](README.md#detailed-support-matrix) 是能力清单的规范源，并包含最新、最详细的逐项支持矩阵。安装最新版请使用下方 Homebrew 命令，发布文件见 [GitHub Releases](https://github.com/everettjf/homebrew-tap/releases)。
 
 ## 截图
 
@@ -26,7 +25,6 @@ brew install bytetrawl-cli
 
 ```sh
 bytetrawl-cli --version
-# bytetrawl-cli 1.1.1
 ```
 
 macOS 应用经过 Developer ID 签名和 Apple 公证，并附带公证票据。发布前会执行严格签名验证、公证票据验证和 Gatekeeper 评估。
