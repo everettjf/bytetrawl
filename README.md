@@ -211,6 +211,15 @@ Distributed releases are validated with the complete Rust workspace test suite, 
 The [automated testing matrix](docs/testing.md) documents exactly which semantic, CLI, desktop,
 release, and packaging behaviors run in CI, along with the remaining native UI testing boundary.
 
+### Real-world regression corpus
+
+Synthetic fixtures are complemented by a pinned public corpus of 16 real artifacts spanning IPA,
+APK, APPX/MSIX, signed and deliberately corrupted macOS apps, notarized PKG, DMG, ISO, PE, ELF,
+DEB, RPM, and intentionally damaged APPX packages. Downloads are byte-length and SHA-256 pinned;
+the test runner never executes or installs them and checks format-specific report assertions. This
+scheduled/manual gate catches integration and platform-trust behavior that small fixtures cannot.
+See the [corpus provenance and coverage](tests/real-world-corpus/README.md).
+
 ## Safety
 
 Imported artifacts are untrusted input. ByteTrawl performs static inspection and never executes an imported program. External tools are launched only after an explicit user action. High entropy and other findings are indicators, not malware verdicts.

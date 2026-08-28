@@ -71,6 +71,10 @@ Der Kern ist unabhängig von GPUI und untersucht Windows PE und Linux ELF statis
 
 ByteTrawl arbeitet statisch und schreibgeschützt. Es führt importierte Programme nicht aus, mountet keine Images, installiert keine Pakete, extrahiert Archive nicht automatisch, dekompiliert und debuggt nicht und verändert keine Bytes. Symbolischen Links wird nicht gefolgt; Eingaben, Rekursion, Dateizahl, Strings, Archiveinträge und Befehlsausgaben sind explizit begrenzt. Heuristische Findings sind Hinweise, keine Malware-Urteile.
 
+## Automatisierte Qualitätssicherung
+
+Neben dem vollständigen Rust-Workspace, Clippy, Rust 1.88 als MSRV, CLI-/Report-Verträgen und macOS-App-Build/Launch prüft ein öffentlicher Korpus aus 16 nach Länge und SHA-256 fixierten realen Artefakten IPA, APK, APPX/MSIX, gültig und absichtlich beschädigt signierte macOS-Apps, notarisiertes PKG, DMG, ISO, PE, ELF, DEB, RPM und fehlerhafte APPX-Pakete. Jeder Release installiert App und CLI außerdem real über Homebrew und validiert Developer ID, Apple-Notarisierung, Stapler, Gatekeeper und den Formula-Test. Details enthält die [Testmatrix](docs/testing.md).
+
 ## Dokumentation
 
 [Produktstrategie](docs/product-strategy.md) · [Produkt- und Wettbewerbsanalyse](docs/product-analysis-roadmap.md) · [IPAView-Plan](docs/ipa-convergence-plan.md) · [Testmatrix](docs/testing.md) · [Website](https://xnu.app/bytetrawl/)

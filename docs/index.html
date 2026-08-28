@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ByteTrawl — Static inspection for apps, packages &amp; binaries</title>
-  <meta name="description" content="A fast, native macOS workbench for statically inspecting applications, packages, archives, and PE, Mach-O, or ELF binaries.">
+  <title>ByteTrawl — Static triage, comparison &amp; release audit</title>
+  <meta name="description" content="A native workbench for safe static triage, comparison, and release auditing across applications, packages, archives, and binaries.">
   <meta name="theme-color" content="#0e0d0b">
   <meta property="og:title" content="ByteTrawl">
-  <meta property="og:description" content="Static inspection for apps, packages &amp; binaries.">
+  <meta property="og:description" content="Safe static triage, comparison, and release auditing for cross-platform software artifacts.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://xnu.app/bytetrawl/">
   <meta property="og:image" content="https://xnu.app/bytetrawl/assets/og.png">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="ByteTrawl">
-  <meta name="twitter:description" content="Static inspection for apps, packages &amp; binaries.">
+  <meta name="twitter:description" content="Safe static triage, comparison, and release auditing for cross-platform software artifacts.">
   <meta name="twitter:image" content="https://xnu.app/bytetrawl/assets/og.png">
   <link rel="icon" type="image/png" sizes="64x64" href="assets/icons/favicon-64.png">
   <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
@@ -27,6 +27,7 @@
       <a href="#capabilities">Capabilities</a>
       <a href="#gallery">Gallery</a>
       <a href="#safety">Safety</a>
+      <a href="#quality">Quality</a>
       <a href="#install">Install</a>
       <a class="nav-release" href="https://github.com/everettjf/homebrew-tap/releases">Releases ↗</a>
     </nav>
@@ -37,7 +38,7 @@
       <div class="hero-copy">
         <p class="eyebrow"><span class="live-dot"></span> Available for macOS 13+</p>
         <h1>Know what’s<br><em>inside.</em></h1>
-        <p class="lede">A native static-inspection workbench for applications, packages, archives, disk images, and PE, Mach-O, or ELF binaries.</p>
+        <p class="lede">A native workbench for safe static triage, release comparison, and platform-aware auditing across applications, packages, archives, disk images, and binaries.</p>
         <div class="actions">
           <a class="button primary" href="#install">Install with Homebrew</a>
           <a class="button" href="https://github.com/everettjf/homebrew-tap/releases">View releases ↗</a>
@@ -129,6 +130,18 @@
           <ul><li><span>✓</span> No symlink traversal during discovery</li><li><span>✓</span> Lazy hashing, entropy, strings, and dependency work</li><li><span>✓</span> Cancellable background analysis</li><li><span>✓</span> External tools launch only when requested</li></ul>
         </div>
       </div>
+    </section>
+
+    <section class="section quality shell" id="quality">
+      <div class="section-heading"><p class="eyebrow">EVIDENCE, NOT PROMISES</p><h2>Tested from parser<br>to Homebrew install.</h2></div>
+      <p class="section-intro">Deterministic fixtures keep semantics stable. Pinned public artifacts exercise real packaging and trust behavior. Every distributed macOS build completes the full Apple and Homebrew release chain.</p>
+      <div class="quality-grid">
+        <article><strong>16</strong><b>real public artifacts</b><p>IPA, APK, MSIX, signed and corrupted apps, notarized PKG, DMG, ISO, PE, ELF, DEB, RPM, and damaged APPX cases.</p></article>
+        <article><strong>20</strong><b>IPA compatibility variants</b><p>Identity, targets, architectures, privacy, provisioning, entitlements, findings, and IPAView-compatible output.</p></article>
+        <article><strong>1.88</strong><b>verified Rust MSRV</b><p>The declared minimum toolchain is compiled in CI alongside stable tests, Clippy, CLI contracts, and app launch checks.</p></article>
+        <article><strong>3×</strong><b>macOS trust verification</b><p>Strict code-signature verification, stapled-ticket validation, and Gatekeeper assessment run on the final archived app and again after Homebrew installation.</p></article>
+      </div>
+      <div class="quality-links"><a href="testing.md">Testing matrix ↗</a><a href="https://github.com/everettjf/homebrew-tap/releases">Signed releases ↗</a></div>
     </section>
 
     <section class="section install shell" id="install">

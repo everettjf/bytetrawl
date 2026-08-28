@@ -71,6 +71,10 @@ bytetrawl-cli inspect ./package --hash sha256 --strings --entropy
 
 ByteTrawl は読み取り専用の静的ツールです。取り込んだプログラムの実行、イメージのマウント、パッケージのインストール、自動展開、逆コンパイル、デバッグ、バイト変更は行いません。シンボリックリンクを追跡せず、入力、再帰、ファイル数、文字列、archive members、外部コマンド出力には明示的な上限があります。ヒューリスティックな finding は調査の手掛かりであり、マルウェア判定ではありません。
 
+## 自動品質保証
+
+Rust workspace 全体、Clippy、Rust 1.88 の MSRV、CLI/レポート契約、macOS App の build/launch に加え、長さと SHA-256 を固定した 16 個の公開実物 artifact で IPA、APK、APPX/MSIX、正常・破損署名 macOS App、notarized PKG、DMG、ISO、PE、ELF、DEB、RPM、異常 APPX を回帰検証します。Release では Homebrew 経由で App と CLI を実際に導入し、Developer ID、Apple notarization、stapler、Gatekeeper、Formula test まで確認します。詳細は[自動テストマトリクス](docs/testing.md)を参照してください。
+
 ## ドキュメント
 
 [製品戦略](docs/product-strategy.md) · [現状・競合分析](docs/product-analysis-roadmap.md) · [IPAView 統合計画](docs/ipa-convergence-plan.md) · [テストマトリクス](docs/testing.md) · [Web サイト](https://xnu.app/bytetrawl/)

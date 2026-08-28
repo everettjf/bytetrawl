@@ -80,6 +80,10 @@ cargo run -p bytetrawl
 
 ByteTrawl 是只读静态分析工具：不会执行导入程序、挂载镜像、安装软件包、自动解包、反编译、调试进程或修改字节。目录发现不跟随符号链接；解析输入、递归深度、文件数、字符串、重定位、归档成员和外部命令输出都有显式限制。启发式 finding 是调查线索，不是恶意软件结论。
 
+## 自动化质量保障
+
+除完整 Rust workspace 测试、Clippy、Rust 1.88 最低版本、CLI/报告契约和 macOS App 构建启动测试外，ByteTrawl 还用 16 个经过长度与 SHA-256 固定的公开真实制品回归 IPA、APK、APPX/MSIX、有效及破坏签名的 macOS App、公证 PKG、DMG、ISO、PE、ELF、DEB、RPM 和异常 APPX。发布流程还会实际通过 Homebrew 安装 App 与 CLI，并验证 Developer ID 签名、Apple 公证、stapler、Gatekeeper 和 Formula 自测。详见[自动化测试矩阵](docs/testing.md)。
+
 ## 规划与文档
 
 - [产品战略与路线图](docs/product-strategy.md)
