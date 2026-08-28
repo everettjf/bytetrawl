@@ -71,6 +71,10 @@ O núcleo é independente do GPUI e inspeciona Windows PE e Linux ELF estaticame
 
 ByteTrawl é estático e somente leitura. Não executa programas importados, monta imagens, instala pacotes, extrai arquivos automaticamente, descompila, depura ou modifica bytes. A descoberta não segue links simbólicos e há limites explícitos para entradas, recursão, arquivos, strings, membros de arquivos e saída de comandos. Findings heurísticos são pistas, não veredictos de malware.
 
+## Garantia automatizada de qualidade
+
+Além do workspace Rust completo, Clippy, Rust 1.88 mínimo, contratos de CLI/relatórios e build/launch do app macOS, um corpus público com 16 artefatos reais fixados por tamanho e SHA-256 testa IPA, APK, APPX/MSIX, apps macOS com assinatura válida e corrompida, PKG notarizado, DMG, ISO, PE, ELF, DEB, RPM e APPX danificados. Cada release também instala app e CLI via Homebrew e valida Developer ID, notarização Apple, stapler, Gatekeeper e o teste da Formula. Consulte a [matriz de testes](docs/testing.md).
+
 ## Documentação
 
 [Estratégia](docs/product-strategy.md) · [Análise do produto e concorrentes](docs/product-analysis-roadmap.md) · [Plano IPAView](docs/ipa-convergence-plan.md) · [Testes](docs/testing.md) · [Site](https://xnu.app/bytetrawl/)
