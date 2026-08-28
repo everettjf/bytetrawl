@@ -139,6 +139,71 @@ ByteTrawl is being developed as a **safe static triage, comparison, and release-
 
 Keyboard shortcuts on macOS: `⌘N` opens a new window, `⌘O` opens a file, `⇧⌘O` opens a folder, `⌥⌘O` opens a workspace, `⌘S` saves a workspace, and `⌘F` focuses global search.
 
+## Detailed support matrix
+
+ByteTrawl separates three levels of support: **audit** means platform-aware release semantics and findings; **inspect** means bounded structural parsing and navigation; **identify** means reliable type recognition with the universal metadata, search, strings, hash, entropy, and Hex workflows still available.
+
+### Applications and release packages
+
+| Artifact | Level | Implemented capabilities |
+|---|---|---|
+| macOS `.app`, frameworks, bundles, plug-ins and directories | Inspect | Logical component tree; executables, frameworks, libraries, plug-ins and resources; Info.plist metadata; Mach-O slices; dependencies; static and host-verified signatures; entitlements; Hardened Runtime; Gatekeeper/notarization assessment; hashes, entropy, strings and Hex |
+| iOS `.ipa` | Audit | Virtual ZIP tree without extraction; `Payload/*.app` discovery; app identity, Bundle ID, version/build and minimum OS; installed and compressed sizes; embedded apps, extensions and frameworks; architectures and simulator-slice checks; localizations; usage descriptions and `PrivacyInfo.xcprivacy`; provisioning profile, Team/Application ID, expiration and entitlements; evidence-linked findings; IPAView-compatible JSON |
+| Android `.apk` | Audit | Binary AndroidManifest parsing; package/version/SDK identity; application flags; permissions, exported components, intent filters and deep links; DEX string/type/field/method/class counts; `resources.arsc` size; native libraries and ABI evidence; signing-scheme indicators; release findings |
+| Windows `.appx` / `.msix` | Audit | AppxManifest identity; publisher, version and architecture; target device families; normal and restricted capabilities; applications, executables and entry points; block-map and package-signature presence; release findings |
+| Debian `.deb` | Audit | Control metadata, package identity, version, architecture, maintainer, dependencies and description; installed size; payload file table and largest files; Unix modes and privileged-file checks; maintainer scripts; release findings |
+| Apple flat `.pkg` / `.mpkg` and XAR | Inspect | Bounded XAR table of contents, member sizes, checksums, embedded-signature count and unsafe-path indicators; does not launch Installer or extract payloads |
+| Windows `.exe`, `.dll`, `.sys` and other PE/COFF | Inspect | PE headers, architecture, sections, relocations, imports, exports, symbols, dependencies, entry point, image base, Authenticode blob/status metadata and findings; analysis works on macOS without executing the file |
+| Linux executables, shared objects and other ELF files | Inspect | ELF headers, class/endian/architecture, interpreter, sections, segments, relocations, dynamic imports/exports, symbols, dependencies, entry point, build metadata and findings; analysis works on macOS without executing the file |
+
+### Binary formats, containers and data
+
+| Format or content | Level | Implemented capabilities |
+|---|---|---|
+| Mach-O and Universal/Fat Mach-O | Inspect | Per-slice architecture and file range; headers, load-command metadata, sections, segments, relocations, imports, exports, symbols, dylib dependencies, entry point and code-signature blob |
+| ZIP containers | Inspect | Central-directory-only member tree, compressed/expanded sizes, CRC metadata, symlink detection, traversal/absolute-path hazards, expansion ratio and suspicious expanded-size findings; no extraction |
+| tar, tar.gz and tgz | Inspect | Bounded member table, sizes, modes, links and path hazards without extracting files |
+| ar archives and static libraries | Inspect | Bounded member table and sizes; Debian packages receive the deeper platform audit above |
+| Apple UDIF/DMG | Inspect | Trailer and container metadata, partitions, sectors, compressed blocks and compression ratios; recognized by structure and never mounted |
+| ISO 9660 | Inspect | Volume descriptor, volume identifier, sector and block-size metadata; never mounted |
+| JSON, XML and XML/binary plist | Inspect | Bounded structured parsing and flattened metadata; plist and manifest fields feed platform-aware audits where applicable |
+| SQLite 3 | Inspect | Header, page size, read/write versions, schema format and text encoding |
+| Images | Inspect | Format, dimensions and pixel count for image formats supported by the metadata parser; no EXIF forensics or image editor |
+| UTF-8 text and `.desktop` metadata | Inspect | Text/resource discovery, global search and parsed desktop-entry key/value metadata |
+| 7z, RAR and standalone compressed streams | Identify | Container/type identification plus universal file workflows; full member browsing is not yet implemented |
+| Unknown or extensionless files | Identify | Magic-based classification where possible; size and timestamps; byte/text search; bounded Hex; optional SHA-256/SHA-1/MD5, entropy and strings |
+
+### Views and analysis operations
+
+| Surface | What is available |
+|---|---|
+| Artifact Tree | Logical grouping of executables, frameworks, libraries, plug-ins, resources, metadata, archive members, packages and disk images; directory discovery never follows symbolic links |
+| Overview and Metadata | Kind, format, path, size, architecture, bitness, endian, entry point, image base, interpreter, parsed metadata, dependency/signature summaries and analysis errors |
+| Headers, Slices, Sections and Segments | Unified PE/Mach-O/ELF headers; Universal Mach-O slice selection; address/file layouts, flags and lazy section entropy |
+| Imports, Exports, Symbols and Relocations | Filterable, virtualized tables with names, addresses, libraries, relocation types, symbols and addends where the source format provides them |
+| Dependencies and Dependency Graph | Per-binary requested libraries plus artifact-wide edges; architecture and bundled/system/missing/unknown resolution with target paths |
+| Strings | ASCII, UTF-8, UTF-16LE and UTF-16BE; file offsets, encodings, section names and virtual addresses where mapping exists |
+| Hex | Read-only 4 KiB windows, offset jumps, byte/text search, selection and copy without loading the complete file |
+| Signature | Static embedded signature metadata; on macOS, opt-in bounded `codesign`/Gatekeeper verification, entitlements, signer, Team ID, timestamp, Hardened Runtime and notarization status |
+| Findings and Policy | Severity, rule/message and evidence across generic, IPA, Android, Windows and Linux analysis; shared profiles, rule controls, overrides and time-bounded suppressions in desktop and CLI |
+| Compare | Exact SHA-256 content identity; added/removed/modified/moved files; directory and type growth; duplicates and largest growth; IPA identity, target, architecture, localization, privacy, signing, entitlement and finding changes |
+| Search | Artifact-wide search across names, metadata, symbols and strings, plus direct hexadecimal byte queries |
+| Workspaces | Artifact path, selected node/view, bookmarks, notes, tool configuration and cached analysis snapshot |
+| External tools | Explicit launch of compatible GUI tools; bounded, cancellable captured output for supported command-line tools; installed tools are prioritized |
+
+### CLI, reports and CI
+
+- `inspect` supports `lightweight`, `standard`, and `deep` analysis; explicit hashes, strings, entropy, signatures and dependency graph; cancellation and atomic output files.
+- Reports are available as versioned JSON, Markdown, standalone HTML and SARIF. Every format includes the unified generic/platform findings and policy violations.
+- `--fail-on` evaluates the same aggregated generic, IPA, Android, Windows and Linux findings. Release policies apply common size/severity gates and platform-specific privacy, architecture, entitlement, permission, capability, signature, DEX, installed-size, maintainer-script and privileged-file rules.
+- `compare` emits deterministic JSON and can enforce growth, newly introduced finding/entitlement, and added-architecture policies.
+- Stable exit codes distinguish fatal errors (`1`), policy/finding failures (`2`), cancellation (`4`) and usable partial reports (`5`).
+- The repository CI runs the full workspace tests and Clippy on current stable Rust, verifies the actual Rust 1.88 minimum, builds and launches the macOS App, and checks that the release script retains every signing/notarization validation contract.
+
+### Deliberate boundaries
+
+ByteTrawl is a static, read-only workbench. It does not execute imported programs, mount images, install packages, automatically extract archives, disassemble into assembly listings, decompile code, debug processes, patch bytes, or claim that a heuristic finding proves malware. Windows and Linux binaries are inspection targets today; the distributed desktop host remains Apple-silicon macOS 13 or later. MSI, RPM, AAB/XAPK, 7z and RAR do not yet have the same platform-semantic audit depth as IPA, APK, MSIX or DEB.
+
 ## Release verification
 
 ByteTrawl 1.1.1 was validated with the complete Rust workspace test suite, Homebrew strict Formula and Cask audits, a real Homebrew installation of both artifacts, the Formula test, archive integrity checks, arm64 binary inspection, version checks, strict `codesign` verification, Apple notarization, stapler validation, and Gatekeeper assessment.

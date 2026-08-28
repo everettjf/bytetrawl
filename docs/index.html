@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ByteTrawl — Static inspection for apps, packages & binaries</title>
+  <title>ByteTrawl — Static inspection for apps, packages &amp; binaries</title>
   <meta name="description" content="A fast, native macOS workbench for statically inspecting applications, packages, archives, and PE, Mach-O, or ELF binaries.">
   <meta name="theme-color" content="#0e0d0b">
-  <meta property="og:title" content="ByteTrawl 1.1.0">
-  <meta property="og:description" content="Static inspection for apps, packages & binaries.">
+  <meta property="og:title" content="ByteTrawl 1.1.1">
+  <meta property="og:description" content="Static inspection for apps, packages &amp; binaries.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://xnu.app/bytetrawl/">
   <meta property="og:image" content="https://xnu.app/bytetrawl/assets/og.png">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="ByteTrawl 1.1.0">
-  <meta name="twitter:description" content="Static inspection for apps, packages & binaries.">
+  <meta name="twitter:title" content="ByteTrawl 1.1.1">
+  <meta name="twitter:description" content="Static inspection for apps, packages &amp; binaries.">
   <meta name="twitter:image" content="https://xnu.app/bytetrawl/assets/og.png">
   <link rel="icon" type="image/png" sizes="64x64" href="assets/icons/favicon-64.png">
   <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
@@ -24,22 +24,23 @@
     <a class="brand" href="#top" aria-label="ByteTrawl home"><span class="brand-mark">BT</span><span>ByteTrawl</span></a>
     <nav aria-label="Primary navigation">
       <a href="#inspect">Inspect</a>
+      <a href="#capabilities">Capabilities</a>
       <a href="#gallery">Gallery</a>
       <a href="#safety">Safety</a>
       <a href="#install">Install</a>
-      <a class="nav-release" href="https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.1.0">v1.1.0 ↗</a>
+      <a class="nav-release" href="https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.1.1">v1.1.1 ↗</a>
     </nav>
   </header>
 
   <main id="top">
     <section class="hero shell">
       <div class="hero-copy">
-        <p class="eyebrow"><span class="live-dot"></span> Version 1.1.0 · macOS 13+</p>
+        <p class="eyebrow"><span class="live-dot"></span> Version 1.1.1 · macOS 13+</p>
         <h1>Know what’s<br><em>inside.</em></h1>
         <p class="lede">A native static-inspection workbench for applications, packages, archives, disk images, and PE, Mach-O, or ELF binaries.</p>
         <div class="actions">
           <a class="button primary" href="#install">Install with Homebrew</a>
-          <a class="button" href="https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.1.0">View release ↗</a>
+          <a class="button" href="https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.1.1">View release ↗</a>
         </div>
         <p class="micro">Apple silicon · Signed &amp; notarized · Apache-2.0</p>
       </div>
@@ -59,7 +60,55 @@
     </section>
 
     <section class="signal-strip" aria-label="Supported formats">
-      <span>MACH-O</span><i></i><span>PE</span><i></i><span>ELF</span><i></i><span>DMG</span><i></i><span>XAR / PKG</span><i></i><span>ZIP / TAR</span>
+      <span>IPA</span><i></i><span>APK</span><i></i><span>MSIX</span><i></i><span>DEB</span><i></i><span>MACH-O</span><i></i><span>PE</span><i></i><span>ELF</span><i></i><span>DMG / PKG</span>
+    </section>
+
+    <section class="section capabilities shell" id="capabilities">
+      <div class="section-heading"><p class="eyebrow">DETAILED SUPPORT</p><h2>From package identity<br>to the last useful byte.</h2></div>
+      <p class="section-intro">Audit means platform-aware release semantics and findings. Inspect means bounded structural parsing and navigation. Identify means reliable recognition with universal search, strings, hashes, entropy, and Hex still available.</p>
+
+      <div class="capability-block">
+        <div class="capability-title"><span>01</span><h3>Applications &amp; release packages</h3></div>
+        <div class="capability-table" role="table" aria-label="Application and release package support">
+          <div class="capability-row header" role="row"><b>Artifact</b><b>Level</b><b>Implemented capabilities</b></div>
+          <div class="capability-row" role="row"><strong>macOS apps &amp; bundles</strong><mark>Inspect</mark><p>Logical component tree, Info.plist, Mach-O slices, frameworks, dependencies, signatures, entitlements, Hardened Runtime and Gatekeeper/notarization assessment.</p></div>
+          <div class="capability-row" role="row"><strong>iOS IPA</strong><mark class="audit">Audit</mark><p>Payload app discovery, identity and versions, installed/compressed sizes, targets, frameworks, extensions, architectures, localizations, privacy manifests, provisioning, entitlements, evidence-linked findings and IPAView-compatible JSON.</p></div>
+          <div class="capability-row" role="row"><strong>Android APK</strong><mark class="audit">Audit</mark><p>Binary manifest, package/version/SDK identity, permissions, components, intent filters, deep links, DEX counts, resources, native libraries, signing indicators and release findings.</p></div>
+          <div class="capability-row" role="row"><strong>Windows APPX / MSIX</strong><mark class="audit">Audit</mark><p>Manifest identity, publisher, version, architecture, target families, normal/restricted capabilities, applications, executables, block map, package signature and findings.</p></div>
+          <div class="capability-row" role="row"><strong>Debian DEB</strong><mark class="audit">Audit</mark><p>Control identity and dependencies, installed size, payload files and modes, largest files, privileged-file checks, maintainer scripts and findings.</p></div>
+          <div class="capability-row" role="row"><strong>Apple PKG / XAR</strong><mark>Inspect</mark><p>Bounded table of contents, member sizes, checksums, embedded signature count and unsafe paths without launching Installer or extracting payloads.</p></div>
+        </div>
+      </div>
+
+      <div class="capability-block">
+        <div class="capability-title"><span>02</span><h3>Binaries, containers &amp; data</h3></div>
+        <div class="format-grid">
+          <article><h4>Mach-O / Universal</h4><p>Per-slice architecture and ranges, headers, sections, segments, relocations, imports, exports, symbols, dylibs, entry point and signature blob.</p></article>
+          <article><h4>PE / COFF</h4><p>Windows executables and libraries: headers, architecture, sections, relocations, imports, exports, symbols, dependencies, entry point and Authenticode metadata.</p></article>
+          <article><h4>ELF</h4><p>Class, endian, architecture, interpreter, sections, segments, relocations, dynamic symbols, dependencies, entry point and build metadata.</p></article>
+          <article><h4>ZIP / tar / ar</h4><p>Bounded virtual member tables, sizes, modes, links, CRC data and traversal, symlink, absolute-path, expansion-ratio and expanded-size hazards.</p></article>
+          <article><h4>DMG / ISO</h4><p>Structure-based recognition, partitions, volume and sector metadata, compressed blocks and ratios. Images are never mounted.</p></article>
+          <article><h4>Structured data</h4><p>JSON, XML, binary/XML plist, SQLite headers, image dimensions, UTF-8 text and desktop-entry metadata with explicit parser limits.</p></article>
+          <article><h4>Unknown files</h4><p>Magic detection where possible, metadata, artifact-wide search, bounded Hex, strings, SHA-256/SHA-1/MD5 and entropy.</p></article>
+          <article><h4>Identify-only</h4><p>7z, RAR and standalone compressed streams are recognized, but do not yet receive full member browsing or platform-semantic audits.</p></article>
+        </div>
+      </div>
+
+      <div class="capability-block">
+        <div class="capability-title"><span>03</span><h3>Views, comparison &amp; automation</h3></div>
+        <div class="operation-grid">
+          <article><b>Navigate</b><p>Artifact Tree, Overview, Metadata, Headers, Slices, Sections and Segments.</p></article>
+          <article><b>Trace</b><p>Imports, exports, symbols, relocations, per-file dependencies and artifact-wide dependency edges.</p></article>
+          <article><b>Search</b><p>Names, metadata, symbols, ASCII/UTF-8/UTF-16 strings and direct hexadecimal byte queries.</p></article>
+          <article><b>Inspect bytes</b><p>Read-only 4 KiB Hex windows with offset jump, byte/text search, selection and copy.</p></article>
+          <article><b>Verify trust</b><p>Static signature data plus opt-in bounded macOS signer, entitlement, Hardened Runtime and Gatekeeper checks.</p></article>
+          <article><b>Compare releases</b><p>SHA-256-backed added, removed, modified and moved files; growth, duplicates and IPA privacy/signing changes.</p></article>
+          <article><b>Enforce policy</b><p>Shared generic, IPA, Android, Windows and Linux policies with profiles, overrides and expiring suppressions.</p></article>
+          <article><b>Export &amp; CI</b><p>Versioned JSON, Markdown, standalone HTML and SARIF; atomic files, stable exit codes and cancellation.</p></article>
+        </div>
+      </div>
+
+      <aside class="boundaries"><b>Deliberate boundary</b><p>ByteTrawl is static and read-only. It does not execute imported software, mount images, install packages, automatically extract archives, decompile, debug, patch bytes, or present heuristic findings as malware verdicts. The distributed desktop app currently targets Apple-silicon macOS 13+.</p></aside>
     </section>
 
     <section class="section shell" id="inspect">
@@ -83,13 +132,13 @@
     </section>
 
     <section class="section install shell" id="install">
-      <div class="install-copy"><p class="eyebrow">GET BYTE TRAWL 1.1.0</p><h2>Two tools.<br>One tap.</h2><p>Install the native workbench, the automation-friendly JSON CLI, or both. Built for Apple silicon Macs running macOS 13 or later.</p></div>
+      <div class="install-copy"><p class="eyebrow">GET BYTE TRAWL 1.1.1</p><h2>Two tools.<br>One tap.</h2><p>Install the native workbench, the automation-friendly CLI, or both. Built for Apple silicon Macs running macOS 13 or later.</p></div>
       <div class="terminal">
         <div class="terminal-head"><span>Terminal</span><button type="button" data-copy aria-label="Copy installation commands">Copy</button></div>
         <pre><code><span>$</span> brew tap everettjf/tap
 <span>$</span> brew install --cask bytetrawl
 <span>$</span> brew install bytetrawl-cli</code></pre>
-        <p><b>Verified:</b> 1.1.0 is Developer ID signed, Apple-notarized, and includes a stapled ticket for offline Gatekeeper verification.</p>
+        <p><b>Verified:</b> 1.1.1 is Developer ID signed, Apple-notarized, and includes a stapled ticket for offline Gatekeeper verification.</p>
       </div>
     </section>
   </main>
