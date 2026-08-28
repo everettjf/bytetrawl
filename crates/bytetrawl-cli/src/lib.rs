@@ -657,19 +657,19 @@ pub fn inspect(
     };
     let policy = args.policy.as_deref().map(load_policy).transpose()?;
     let mut policy_violations = Vec::new();
-    if let Some(policy) = policy.as_ref()
-        && ipa.is_none()
-        && android.is_none()
-        && windows_package.is_none()
-        && linux_package.is_none()
-    {
+    if let Some(policy) = policy.as_ref() {
         let generic_findings = findings
             .iter()
             .map(|finding| finding.finding.clone())
             .collect::<Vec<_>>();
+        let policy_artifact_bytes = ipa
+            .as_ref()
+            .map(|report| report.total_bytes)
+            .or_else(|| linux_package.as_ref().map(|report| report.installed_bytes))
+            .unwrap_or_else(|| files.iter().map(|file| file.size).sum());
         policy_violations.extend(evaluate_generic(
             policy,
-            files.iter().map(|file| file.size).sum(),
+            policy_artifact_bytes,
             &generic_findings,
         ));
     }
@@ -792,6 +792,13 @@ fn all_report_findings(report: &InspectionReport) -> Vec<(Severity, String, Stri
             )
         }));
     }
+    findings.extend(report.policy_violations.iter().map(|violation| {
+        (
+            violation.severity,
+            violation.message.clone(),
+            format!("policy:{}", violation.rule_id),
+        )
+    }));
     findings
 }
 
@@ -898,33 +905,9 @@ fn write_json(report: &impl Serialize, output: Option<&Path>, pretty: bool) -> i
 
 fn report_reaches_threshold(report: &InspectionReport, threshold: SeverityThreshold) -> bool {
     let threshold = threshold_rank(threshold);
-    report
-        .findings
+    all_report_findings(report)
         .iter()
-        .any(|finding| severity_rank(finding.finding.severity) >= threshold)
-        || report.ipa.as_ref().is_some_and(|ipa| {
-            ipa.findings
-                .iter()
-                .any(|finding| severity_rank(finding.severity) >= threshold)
-        })
-        || report.android.as_ref().is_some_and(|android| {
-            android
-                .findings
-                .iter()
-                .any(|finding| severity_rank(finding.severity) >= threshold)
-        })
-        || report.windows_package.as_ref().is_some_and(|windows| {
-            windows
-                .findings
-                .iter()
-                .any(|finding| severity_rank(finding.severity) >= threshold)
-        })
-        || report.linux_package.as_ref().is_some_and(|linux| {
-            linux
-                .findings
-                .iter()
-                .any(|finding| severity_rank(finding.severity) >= threshold)
-        })
+        .any(|(severity, _, _)| severity_rank(*severity) >= threshold)
 }
 
 fn threshold_rank(severity: SeverityThreshold) -> u8 {

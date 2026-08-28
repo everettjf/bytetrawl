@@ -116,20 +116,6 @@ pub fn evaluate_generic(
 
 pub fn evaluate_ipa(policy: &ReleasePolicyV1, report: &IpaAuditReportV1) -> Vec<PolicyViolation> {
     let mut violations = Vec::new();
-    if policy
-        .max_artifact_bytes
-        .is_some_and(|maximum| report.total_bytes > maximum)
-    {
-        violations.push(PolicyViolation {
-            rule_id: "policy.max-artifact-bytes".into(),
-            severity: Severity::High,
-            message: format!(
-                "installed size {} exceeds policy maximum {}",
-                report.total_bytes,
-                policy.max_artifact_bytes.unwrap_or_default()
-            ),
-        });
-    }
     if policy.require_privacy_manifest && !report.has_privacy_manifest {
         violations.push(PolicyViolation {
             rule_id: "policy.require-privacy-manifest".into(),

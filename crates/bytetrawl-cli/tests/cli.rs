@@ -114,3 +114,40 @@ fn compare_and_policy_failures_have_stable_exit_codes() {
         "policy.max-growth-bytes"
     );
 }
+
+#[test]
+fn policy_violations_are_visible_in_every_human_and_machine_report() {
+    let directory = tempfile::tempdir().expect("create policy report fixture directory");
+    let artifact = directory.path().join("artifact.bin");
+    let policy = directory.path().join("policy.json");
+    std::fs::write(&artifact, vec![0u8; 32]).expect("write policy artifact");
+    std::fs::write(
+        &policy,
+        br#"{"schema_version":"1.0","max_artifact_bytes":1}"#,
+    )
+    .expect("write inspection policy");
+
+    for (format, marker) in [
+        ("json", "policy.max-artifact-bytes"),
+        ("markdown", "policy:policy.max-artifact-bytes"),
+        ("html", "policy:policy.max-artifact-bytes"),
+        ("sarif", "policy:policy.max-artifact-bytes"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_bytetrawl-cli"))
+            .args([
+                "inspect",
+                artifact.to_str().expect("UTF-8 artifact path"),
+                "--policy",
+                policy.to_str().expect("UTF-8 policy path"),
+                "--format",
+                format,
+            ])
+            .output()
+            .expect("run policy report format");
+        assert_eq!(output.status.code(), Some(2), "{format}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(marker),
+            "missing policy violation from {format} report"
+        );
+    }
+}
