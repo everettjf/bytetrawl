@@ -415,11 +415,11 @@ fn parse_utf16_pool_string(bytes: &[u8], start: usize, end: usize) -> Result<Str
     let slice = bytes
         .get(cursor..cursor + byte_length)
         .ok_or_else(|| ByteTrawlError::Malformed("Android UTF-16 string is truncated".into()))?;
-    // `slice::as_chunks` is newer than the workspace MSRV (Rust 1.85).
-    #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
     let words = slice
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair));
     String::from_utf16(&words.collect::<Vec<_>>())
         .map_err(|error| ByteTrawlError::Malformed(format!("Android UTF-16 string: {error}")))
 }
