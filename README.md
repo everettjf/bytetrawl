@@ -1,10 +1,14 @@
 # ByteTrawl 1.1.1
 
+**English** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md) · [Deutsch](README.de.md)
+
 [![Version](https://img.shields.io/badge/version-1.1.1-9acf68?style=flat-square)](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.1.1)
 [![macOS](https://img.shields.io/badge/macOS-13%2B-d69b51?style=flat-square)](#requirements)
 [![License](https://img.shields.io/badge/license-Apache--2.0-d7d3c6?style=flat-square)](LICENSE)
 
 ByteTrawl is a cross-platform, static application and binary inspection workbench written in Rust. It treats applications, directories, packages, and individual files as logical Artifacts, then presents their structure and PE, Mach-O, or ELF details through one host-independent analysis model.
+
+English is the canonical README. Localized editions cover installation, major capabilities, safety boundaries, and documentation links; consult this edition for the most detailed and current support matrix.
 
 **Current release:** [ByteTrawl 1.1.1](https://github.com/everettjf/homebrew-tap/releases/tag/bytetrawl-v1.1.1) for Apple silicon Macs.
 
