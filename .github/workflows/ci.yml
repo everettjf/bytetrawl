@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-quality-gate:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Run complete verification suite
+        run: scripts/verify.sh
+      - name: Build and launch macOS app bundle
+        run: scripts/test-macos-app.sh
+
+  release-script-contract:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release scripts and required trust checks
+        run: |
+          sh -n scripts/build-macos-app.sh scripts/release-macos.sh
+          test "$(grep -c 'codesign --verify --deep --strict' scripts/release-macos.sh)" -ge 2
+          test "$(grep -c 'xcrun stapler validate' scripts/release-macos.sh)" -ge 2
+          test "$(grep -c 'spctl --assess --type execute' scripts/release-macos.sh)" -ge 2

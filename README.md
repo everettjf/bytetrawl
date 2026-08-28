@@ -143,6 +143,9 @@ Keyboard shortcuts on macOS: `⌘N` opens a new window, `⌘O` opens a file, `�
 
 ByteTrawl 1.1.0 was validated with the complete Rust workspace test suite, Homebrew strict Formula and Cask audits, a real Homebrew installation of both artifacts, the Formula test, archive integrity checks, arm64 binary inspection, version checks, strict `codesign` verification, Apple notarization, stapler validation, and Gatekeeper assessment.
 
+The [automated testing matrix](docs/testing.md) documents exactly which semantic, CLI, desktop,
+release, and packaging behaviors run in CI, along with the remaining native UI testing boundary.
+
 ## Safety
 
 Imported artifacts are untrusted input. ByteTrawl performs static inspection and never executes an imported program. External tools are launched only after an explicit user action. High entropy and other findings are indicators, not malware verdicts.

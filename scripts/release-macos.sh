@@ -54,5 +54,15 @@ chmod 755 "$cli_stage/bytetrawl-cli"
 ditto -c -k --keepParent "$app_dir" "$app_zip"
 tar -C "$release_dir" -czf "$cli_archive" "$(basename "$cli_stage")"
 
+# Verify the exact archived app that will be uploaded, rather than relying only
+# on verification of the pre-archive bundle.
+archive_verify_dir=$(mktemp -d "${TMPDIR:-/tmp}/bytetrawl-release-verify.XXXXXX")
+trap '/bin/rm -rf "$archive_verify_dir"' EXIT HUP INT TERM
+ditto -x -k "$app_zip" "$archive_verify_dir"
+archived_app="$archive_verify_dir/ByteTrawl.app"
+codesign --verify --deep --strict --verbose=2 "$archived_app"
+xcrun stapler validate "$archived_app"
+spctl --assess --type execute --verbose=4 "$archived_app"
+
 shasum -a 256 "$app_zip" "$cli_archive"
 printf '%s\n%s\n' "$app_zip" "$cli_archive"

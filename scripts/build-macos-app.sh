@@ -6,7 +6,11 @@ output_dir=${1:-"$project_root/dist"}
 app_dir="$output_dir/ByteTrawl.app"
 
 cd "$project_root"
-cargo build --release -p bytetrawl
+if [ -n "${BYTETRAWL_CARGO_FEATURES:-}" ]; then
+  cargo build --release -p bytetrawl --features "$BYTETRAWL_CARGO_FEATURES"
+else
+  cargo build --release -p bytetrawl
+fi
 
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp "$project_root/target/release/ByteTrawl" "$app_dir/Contents/MacOS/ByteTrawl"

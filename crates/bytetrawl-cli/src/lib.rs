@@ -919,6 +919,12 @@ fn report_reaches_threshold(report: &InspectionReport, threshold: SeverityThresh
                 .iter()
                 .any(|finding| severity_rank(finding.severity) >= threshold)
         })
+        || report.linux_package.as_ref().is_some_and(|linux| {
+            linux
+                .findings
+                .iter()
+                .any(|finding| severity_rank(finding.severity) >= threshold)
+        })
 }
 
 fn threshold_rank(severity: SeverityThreshold) -> u8 {
