@@ -33,12 +33,13 @@ than ordinary pull-request CI because they require protected credentials and ext
 ## Real-world public artifact corpus
 
 In addition to deterministic synthetic fixtures, a scheduled and manually dispatchable workflow
-downloads pinned open-source IPA, APK, MSIX, DMG, PE, ELF, DEB, and RPM artifacts. Every download has a
-fixed byte length and SHA-256 digest, and every report is checked with format-appropriate semantic
-assertions. The manifest, provenance, licenses, coverage model, and local commands are documented in
-[the real-world corpus README](../tests/real-world-corpus/README.md).
+downloads pinned open-source IPA, APK, APPX/MSIX, macOS app, signed/notarized PKG/XAR, DMG, ISO, PE,
+ELF, DEB, and RPM artifacts. Every download has a fixed byte length and SHA-256 digest, and every
+report is checked with format-appropriate semantic assertions. The manifest, provenance, licenses,
+coverage model, signature limitations, and local commands are documented in [the real-world corpus
+README](../tests/real-world-corpus/README.md).
 
 This corpus is deliberately separate from pull-request CI. External hosting availability must not
-make ordinary development flaky, and its roughly 40 MB download should not be repeated on every
+make ordinary development flaky, and its roughly 90 MB download should not be repeated on every
 commit. The scheduled job caches verified payloads, never executes or installs them, and uploads the
 generated JSON reports for regression diagnosis.

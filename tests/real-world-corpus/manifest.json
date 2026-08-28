@@ -72,6 +72,120 @@
       ]
     },
     {
+      "id": "tapa-valid-signed-app",
+      "file": "Tapa_aarch64.app.tar.gz",
+      "type": "macos_app_valid_signature",
+      "source": "https://github.com/aryrabelo/tapa",
+      "license": "MIT",
+      "url": "https://github.com/aryrabelo/tapa/releases/download/v0.2.3/Tapa_aarch64.app.tar.gz",
+      "bytes": 5299110,
+      "sha256": "73f4d994b7d63e14d85ee209f7232db507240e00ece438dca6281bf3de2333c8",
+      "depth": "deep",
+      "prepare": {
+        "kind": "tar_gz",
+        "path": "Tapa.app"
+      },
+      "host_check": "macos_app_valid_notarized",
+      "assertions": [
+        ".artifact.kind == \"application\"",
+        ".artifact_signature.status == \"Valid\"",
+        ".artifact_signature.identifier == \"com.aryrabelo.tapa\"",
+        ".artifact_signature.platform[\"Cryptographic Verification\"] == \"Passed\"",
+        "(.artifact_signature.platform[\"Gatekeeper / Notarization Assessment\"] | startswith(\"Accepted\"))",
+        "([.files[] | select(.analysis.format == \"mach_o\")] | length) >= 2",
+        "([.findings[] | select(.title == \"Invalid code signature\")] | length) == 0"
+      ]
+    },
+    {
+      "id": "tapa-corrupted-signature-app",
+      "file": "Tapa_aarch64.app.tar.gz",
+      "type": "macos_app_invalid_signature",
+      "source": "https://github.com/aryrabelo/tapa",
+      "license": "MIT",
+      "url": "https://github.com/aryrabelo/tapa/releases/download/v0.2.3/Tapa_aarch64.app.tar.gz",
+      "bytes": 5299110,
+      "sha256": "73f4d994b7d63e14d85ee209f7232db507240e00ece438dca6281bf3de2333c8",
+      "depth": "deep",
+      "prepare": {
+        "kind": "tar_gz",
+        "path": "Tapa.app"
+      },
+      "mutation": {
+        "kind": "append_nul",
+        "path": "Tapa.app/Contents/MacOS/Tapa"
+      },
+      "host_check": "macos_app_invalid_signature",
+      "assertions": [
+        ".artifact.kind == \"application\"",
+        ".artifact_signature.status == \"Invalid\"",
+        ".artifact_signature.identifier == \"com.aryrabelo.tapa\"",
+        ".artifact_signature.platform[\"Cryptographic Verification\"] == \"Failed\"",
+        "([.files[] | select(.analysis.format == \"mach_o\")] | length) >= 2",
+        "([.findings[] | select(.title == \"Invalid code signature\" and .severity == \"High\")] | length) >= 1"
+      ]
+    },
+    {
+      "id": "bytetrawl-valid-signed-app",
+      "file": "ByteTrawl-1.1.1-macos.zip",
+      "type": "macos_app_valid_signature",
+      "source": "https://github.com/everettjf/homebrew-tap",
+      "license": "Apache-2.0",
+      "url": "https://github.com/everettjf/homebrew-tap/releases/download/bytetrawl-v1.1.1/ByteTrawl-1.1.1-macos.zip",
+      "bytes": 9417277,
+      "sha256": "9f8e8274c9334aec4ab52b025f3543aca1e115cdefc8cf2a049fcae4b0f33b5e",
+      "depth": "deep",
+      "prepare": {
+        "kind": "zip",
+        "path": "ByteTrawl.app"
+      },
+      "host_check": "macos_app_valid_notarized",
+      "assertions": [
+        ".artifact.kind == \"application\"",
+        ".artifact_signature.status == \"Valid\"",
+        ".artifact_signature.identifier == \"com.bytetrawl.app\"",
+        ".artifact_signature.team_id == \"YPV49M8592\"",
+        ".artifact_signature.platform[\"Cryptographic Verification\"] == \"Passed\"",
+        "(.artifact_signature.platform[\"Gatekeeper / Notarization Assessment\"] | startswith(\"Accepted\"))",
+        "([.files[] | select(.analysis.format == \"mach_o\")] | length) >= 1",
+        "([.findings[] | select(.title == \"Invalid code signature\")] | length) == 0"
+      ]
+    },
+    {
+      "id": "osquery-signed-pkg",
+      "file": "osquery-5.23.1.pkg",
+      "type": "signed_pkg_xar",
+      "source": "https://github.com/osquery/osquery",
+      "license": "Apache-2.0",
+      "url": "https://github.com/osquery/osquery/releases/download/5.23.1/osquery-5.23.1.pkg",
+      "bytes": 25917400,
+      "sha256": "9f40cea0358759ab2ee871c577055657e3cc2c7cbe5c1247f764245941178aa6",
+      "host_check": "pkgutil_signed_notarized",
+      "assertions": [
+        ".artifact.kind == \"package\"",
+        ".artifact.format == \"archive\"",
+        ".files[0].metadata[\"Archive Format\"] == \"Apple XAR / flat PKG\"",
+        ".files[0].metadata[\"Embedded Signatures\"] == \"2\"",
+        ".files[0].metadata[\"Unsafe Paths\"] == \"0\""
+      ]
+    },
+    {
+      "id": "tinycore-iso",
+      "file": "Core-16.2.iso",
+      "type": "iso9660",
+      "source": "http://www.tinycorelinux.net/16.x/x86/release/",
+      "license": "NOASSERTION",
+      "url": "http://www.tinycorelinux.net/16.x/x86/release/Core-16.2.iso",
+      "bytes": 19412992,
+      "sha256": "a80480b7e231490b2da00d1b54cee58c81fd5ebe509d31fb590dd7ccdae6baef",
+      "assertions": [
+        ".artifact.kind == \"disk_image\"",
+        ".artifact.format == \"disk_image\"",
+        ".files[0].metadata[\"Disk Image Format\"] == \"ISO 9660\"",
+        ".files[0].metadata[\"Volume Identifier\"] == \"Core\"",
+        ".files[0].metadata[\"Logical Block Size\"] == \"2048\""
+      ]
+    },
+    {
       "id": "tapa-windows-pe",
       "file": "Tapa_0.2.3_x64-setup.exe",
       "type": "pe",
@@ -134,6 +248,56 @@
         ".artifact.kind == \"package\"",
         ".artifact.format == \"unknown_binary\"",
         ".linux_package == null"
+      ]
+    },
+    {
+      "id": "microsoft-appx-untrusted-certificate",
+      "file": "SignedUntrustedCert-CERT_E_CHAINING.appx",
+      "type": "appx_signature_anomaly",
+      "scenario": "The Microsoft fixture is signed by an untrusted certificate chain. ByteTrawl currently records signature and block-map presence but does not perform Windows trust-chain validation on macOS.",
+      "source": "https://github.com/microsoft/msix-packaging",
+      "license": "MIT",
+      "url": "https://raw.githubusercontent.com/microsoft/msix-packaging/25a65f5c1690930813bcc10cdf1d59fa865f2bb1/src/test/testData/unpack/SignedUntrustedCert-CERT_E_CHAINING.appx",
+      "bytes": 9231,
+      "sha256": "e0f94c16eab4d7acfb41b1dc23acd8c65d23e71a1805061343e4f4ac7018e34e",
+      "assertions": [
+        ".windows_package.identity.name == \"AppxPackaging.Signing.UnitTests.Data\"",
+        ".windows_package.signature_present == true",
+        ".windows_package.block_map_present == true"
+      ]
+    },
+    {
+      "id": "microsoft-appx-tampered-block-map",
+      "file": "SignedTamperedBlockMap-TRUST_E_BAD_DIGEST.appx",
+      "type": "appx_signature_anomaly",
+      "scenario": "The Microsoft fixture has a signed block map with a bad digest. ByteTrawl currently records signature and block-map presence but does not cryptographically validate AppxSignature.p7x.",
+      "source": "https://github.com/microsoft/msix-packaging",
+      "license": "MIT",
+      "url": "https://raw.githubusercontent.com/microsoft/msix-packaging/25a65f5c1690930813bcc10cdf1d59fa865f2bb1/src/test/testData/unpack/SignedTamperedBlockMap-TRUST_E_BAD_DIGEST.appx",
+      "bytes": 9108,
+      "sha256": "fd4244e92cf542ac200c91bad7d0a4a5b6a53ef389deed2eabff29c084cff041",
+      "assertions": [
+        ".windows_package.identity.name == \"google.ietoolbar\"",
+        ".windows_package.signature_present == true",
+        ".windows_package.block_map_present == true"
+      ]
+    },
+    {
+      "id": "microsoft-appx-invalid-code-integrity",
+      "file": "InvalidSignatureBadCodeIntegrity.appx",
+      "type": "appx_signature_anomaly",
+      "scenario": "The Microsoft fixture contains invalid code-integrity signature data and embedded executables that ByteTrawl exposes for follow-up inspection.",
+      "source": "https://github.com/microsoft/msix-packaging",
+      "license": "MIT",
+      "url": "https://raw.githubusercontent.com/microsoft/msix-packaging/25a65f5c1690930813bcc10cdf1d59fa865f2bb1/src/test/testData/unpack/InvalidSignatureBadCodeIntegrity.appx",
+      "bytes": 86805,
+      "sha256": "c687e61823eac83a6f9f2865105e71082468d6260348422aaba6ea6c814d596c",
+      "assertions": [
+        ".windows_package.identity.name == \"Microsoft.Help\"",
+        ".windows_package.signature_present == true",
+        ".windows_package.block_map_present == true",
+        "(.windows_package.executable_members | length) >= 2",
+        "([.findings[] | select(.title == \"Unsigned executable\")] | length) >= 2"
       ]
     }
   ]

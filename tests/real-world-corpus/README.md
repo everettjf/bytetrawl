@@ -9,6 +9,11 @@ length, SHA-256 digest, upstream project, declared license, and stable report as
 script rejects a payload before analysis if either its size or digest differs. ByteTrawl only reads
 these artifacts; the workflow never executes, installs, mounts, or launches them.
 
+Fixed ZIP or tar.gz distributions may be prepared into an isolated directory when the artifact under
+test is the contained macOS `.app`. Preparation happens only after size and digest verification and
+rejects absolute paths, parent traversal, and ZIP backslash paths before extraction. It exists solely
+to present the real bundle to ByteTrawl; the application is never launched.
+
 Run the corpus locally:
 
 ```sh
@@ -25,7 +30,17 @@ the manifest hash. A download failure is reported separately from a ByteTrawl as
 One real package can exercise several layers. The APK covers ZIP, binary AndroidManifest, DEX and
 Android semantics; the IPA covers ZIP members, plists, Mach-O targets, privacy and signing metadata;
 the DEB covers ar, tar, control metadata, payload modes and Linux package semantics. Dedicated PE,
-ELF, DMG, MSIX and identification-only RPM samples preserve the public support-level boundaries.
+ELF, macOS `.app`, DMG, signed/notarized PKG/XAR, ISO 9660, MSIX and identification-only RPM samples
+preserve the public support-level boundaries. The macOS app corpus includes valid Developer ID,
+notarized, and invalid-signature cases. It asserts the platform trust tools, ByteTrawl's signature
+state, and the appropriate absence or presence of high-severity signature findings.
+
+Microsoft's official APPX negative fixtures add untrusted-certificate, tampered signed-block-map, and
+invalid code-integrity scenarios. They currently prove safe parsing, identity recovery, signature and
+block-map presence, and embedded executable findings. ByteTrawl does not yet perform Windows trust
+chain or `AppxSignature.p7x` cryptographic verification on macOS, so the manifest records those source
+scenarios without claiming that their trust failure is detected. This is an explicit capability gap,
+not a passing security verdict.
 
 Synthetic fixtures remain authoritative for malformed offsets, traversal, symlinks, CRC damage,
 decompression limits, cancellation and deterministic edge cases. Real artifacts are regression and
