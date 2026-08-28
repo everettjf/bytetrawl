@@ -4,6 +4,8 @@ set -eu
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 output_dir=${1:-"$project_root/dist"}
 app_dir="$output_dir/ByteTrawl.app"
+app_version=$(sed -n 's/^version = "\([0-9.]*\)"/\1/p' "$project_root/Cargo.toml" | head -1)
+test -n "$app_version"
 
 cd "$project_root"
 if [ -n "${BYTETRAWL_CARGO_FEATURES:-}" ]; then
@@ -15,6 +17,8 @@ fi
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp "$project_root/target/release/ByteTrawl" "$app_dir/Contents/MacOS/ByteTrawl"
 cp "$project_root/packaging/macos/Info.plist" "$app_dir/Contents/Info.plist"
+plutil -replace CFBundleShortVersionString -string "$app_version" "$app_dir/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$app_version" "$app_dir/Contents/Info.plist"
 cp "$project_root/packaging/macos/ByteTrawl.icns" "$app_dir/Contents/Resources/ByteTrawl.icns"
 chmod 755 "$app_dir/Contents/MacOS/ByteTrawl"
 

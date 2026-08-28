@@ -8,6 +8,7 @@ fi
 
 version=$1
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+source_version=$(sed -n 's/^version = "\([0-9.]*\)"/\1/p' "$project_root/Cargo.toml" | head -1)
 release_dir="$project_root/dist/release-$version"
 app_dir="$release_dir/ByteTrawl.app"
 app_zip="$release_dir/ByteTrawl-$version-macos.zip"
@@ -21,6 +22,11 @@ case "$version" in
     exit 2
     ;;
 esac
+
+if [ "$version" != "$source_version" ]; then
+  printf 'VERSION %s does not match Cargo workspace version %s\n' "$version" "$source_version" >&2
+  exit 2
+fi
 
 mkdir -p "$release_dir" "$cli_stage"
 
