@@ -2099,14 +2099,8 @@ impl ByteTrawlApp {
                     .flex_col()
                     .overflow_y_scroll()
                     .p_5()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .flex()
-                            .flex_col()
-                            .child(self.render_tab(cx)),
-                    ),
+                    .pb_8()
+                    .child(self.render_tab(cx)),
             )
     }
     fn render_tab(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2935,8 +2929,6 @@ impl ByteTrawlApp {
             })
             .collect();
         div()
-            .flex_1()
-            .min_h_0()
             .flex()
             .flex_col()
             .gap_5()
