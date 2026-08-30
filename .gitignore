@@ -1,4 +1,16 @@
+# Rust build products and downloaded real-world test corpus
 /target/
+
+# Signed, notarized, and packaged release products
 /dist/
+
+# macOS metadata
 .DS_Store
+
+# Local ByteTrawl workspaces and default report exports
 *.bytetrawl-workspace
+bytetrawl-analysis.md
+bytetrawl-analysis.pdf
+
+# Local command and test logs
+*.log
