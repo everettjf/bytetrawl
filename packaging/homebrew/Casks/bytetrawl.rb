@@ -1,6 +1,6 @@
 cask "bytetrawl" do
-  version "1.1.9"
-  sha256 "c46c40ce38cb31d19a193c9aa36e5124598e71ef5951a5355727622a10f920d7"
+  version "1.1.10"
+  sha256 "115550124051cdb218c8fe87c20d6344f92fb7768d9ea5f8e75587958d7f0f41"
 
   url "https://github.com/everettjf/homebrew-tap/releases/download/bytetrawl-v#{version}/ByteTrawl-#{version}-macos.zip"
   name "ByteTrawl"

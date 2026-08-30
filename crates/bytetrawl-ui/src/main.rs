@@ -2540,8 +2540,9 @@ impl ByteTrawlApp {
                 })
             })
             .collect();
+        let visual_edge_limit = 14;
         let (visual_nodes, visual_edges, graph_height) =
-            dependency_visual_layout(&self.dependency_graph, 36);
+            dependency_visual_layout(&self.dependency_graph, visual_edge_limit);
         let paint_nodes = visual_nodes.clone();
         let paint_edges = visual_edges.clone();
         let node_cards = visual_nodes
@@ -2580,9 +2581,10 @@ impl ByteTrawlApp {
             .flex_col()
             .gap_4()
             .child(panel_title(format!(
-                "Dependency Map · {} nodes · {} edges",
+                "Dependency Map · {} nodes · {} edges · showing first {}",
                 self.dependency_graph.nodes.len(),
-                self.dependency_graph.edges.len()
+                self.dependency_graph.edges.len(),
+                self.dependency_graph.edges.len().min(visual_edge_limit)
             )))
             .child(
                 div()
@@ -2595,7 +2597,7 @@ impl ByteTrawlApp {
                     .child(
                         div()
                             .relative()
-                            .w(px(980.))
+                            .w(px(800.))
                             .h(px(graph_height))
                             .child(
                                 canvas(
@@ -5221,9 +5223,9 @@ fn dependency_visual_layout(
                         .unwrap_or("Artifact"),
                     26,
                 ),
-                x: 32.,
+                x: 24.,
                 y: 0.,
-                width: 220.,
+                width: 210.,
                 color: ACCENT,
             });
             index
@@ -5247,7 +5249,7 @@ fn dependency_visual_layout(
             nodes.push(DependencyVisualNode {
                 id: target_id,
                 label: truncate_chart_label(&label, 32),
-                x: 650.,
+                x: 470.,
                 y: 0.,
                 width: 280.,
                 color: status_color,
