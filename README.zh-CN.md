@@ -7,7 +7,7 @@
 
 ByteTrawl 是一个使用 Rust 编写的跨平台软件制品安全静态分诊、比较与发布审计工作台。它把应用、目录、发布包与单个文件统一建模为 Artifact，在不运行目标程序的情况下检查其结构、元数据、签名、依赖以及 PE、Mach-O 和 ELF 二进制内容。
 
-最新桌面能力包括 Size Lab 与交互式 treemap、熵 Area Chart/热力图与 Hex 跳转、可视化依赖图、签名/Provisioning 时间线、IPA 架构/隐私矩阵、Findings 严重度筛选、可保存的工作区布局、高对比模式，以及本地 SVG 视觉报告导出。
+最新桌面能力包括 Size Lab 与交互式 treemap、熵 Area Chart/热力图与 Hex 跳转、Canvas 依赖节点图、签名/Provisioning 时间线、IPA 架构/隐私矩阵、Findings 严重度筛选、可保存的面板显隐与拖拽宽度、高对比模式，以及本地 SVG 报告和窗口截图导出。
 
 英文 [README](README.md#detailed-support-matrix) 是能力清单的规范源，并包含最新、最详细的逐项支持矩阵。安装最新版请使用下方 Homebrew 命令，发布文件见 [GitHub Releases](https://github.com/everettjf/homebrew-tap/releases)。
 

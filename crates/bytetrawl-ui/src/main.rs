@@ -25,7 +25,7 @@ use bytetrawl_windows::{WindowsPackageReportV1, audit_msix, is_msix};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
-    Disableable, Root, Sizable, StyledExt, Theme, ThemeMode,
+    Disableable, PixelsExt, Root, Sizable, StyledExt, Theme, ThemeMode,
     badge::Badge,
     button::{Button, ButtonVariants as _},
     chart::{AreaChart, BarChart, PieChart},
@@ -33,6 +33,7 @@ use gpui_component::{
     menu::{DropdownMenu as _, PopupMenuItem},
     progress::Progress,
     resizable::{h_resizable, resizable_panel},
+    scroll::ScrollableElement,
     tab::{Tab, TabBar},
 };
 use serde::{Deserialize, Serialize};
@@ -63,6 +64,23 @@ struct EntropySample {
     label: String,
     offset: u64,
     entropy: f64,
+}
+
+#[derive(Clone)]
+struct DependencyVisualNode {
+    id: Option<uuid::Uuid>,
+    label: String,
+    x: f32,
+    y: f32,
+    width: f32,
+    color: u32,
+}
+
+#[derive(Clone)]
+struct DependencyVisualEdge {
+    source: usize,
+    target: usize,
+    color: u32,
 }
 
 const CHART_COLORS: [u32; 8] = [
@@ -98,6 +116,7 @@ actions!(
         LayoutAnalysis,
         ToggleHighContrast,
         ExportVisualReport,
+        CaptureWindowScreenshot,
         SaveWorkspace,
         FocusSearch,
         Quit
@@ -121,6 +140,8 @@ struct UiPreferences {
     show_sidebar: bool,
     show_inspector: bool,
     high_contrast: bool,
+    sidebar_width: f32,
+    inspector_width: f32,
 }
 
 impl Default for UiPreferences {
@@ -129,6 +150,8 @@ impl Default for UiPreferences {
             show_sidebar: true,
             show_inspector: true,
             high_contrast: false,
+            sidebar_width: 280.,
+            inspector_width: 320.,
         }
     }
 }
@@ -319,6 +342,8 @@ struct ByteTrawlApp {
     show_inspector: bool,
     finding_filter: Option<Severity>,
     high_contrast: bool,
+    sidebar_width: f32,
+    inspector_width: f32,
 }
 
 impl ByteTrawlApp {
@@ -396,6 +421,8 @@ impl ByteTrawlApp {
             show_inspector: preferences.show_inspector,
             finding_filter: None,
             high_contrast: preferences.high_contrast,
+            sidebar_width: preferences.sidebar_width.clamp(180., 520.),
+            inspector_width: preferences.inspector_width.clamp(240., 560.),
         }
     }
     fn choose(&mut self, folder: bool, cx: &mut Context<Self>) {
@@ -1894,10 +1921,13 @@ impl ByteTrawlApp {
     }
 
     fn save_ui_preferences(&self) {
+        let stored = load_ui_preferences();
         let _ = store_ui_preferences(&UiPreferences {
             show_sidebar: self.show_sidebar,
             show_inspector: self.show_inspector,
             high_contrast: self.high_contrast,
+            sidebar_width: stored.sidebar_width,
+            inspector_width: stored.inspector_width,
         });
     }
 
@@ -1942,6 +1972,46 @@ impl ByteTrawlApp {
         }
         cx.notify();
     }
+
+    fn capture_window_screenshot(&mut self, cx: &mut Context<Self>) {
+        let destination = rfd::FileDialog::new()
+            .set_title("Save ByteTrawl Window Screenshot")
+            .set_file_name("bytetrawl-window.png")
+            .add_filter("PNG image", &["png"])
+            .save_file();
+        let Some(destination) = destination else {
+            return;
+        };
+        self.status = "Choose the ByteTrawl window to capture…".into();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let screenshot_path = destination.clone();
+            let result = cx
+                .background_spawn(async move {
+                    std::process::Command::new("/usr/sbin/screencapture")
+                        .args(["-w", "-o", "-x"])
+                        .arg(&screenshot_path)
+                        .status()
+                        .map(|status| status.success())
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(true) if destination.is_file() => {
+                        this.status =
+                            format!("Window screenshot saved · {}", destination.display()).into();
+                    }
+                    Ok(_) => this.status = "Window screenshot cancelled".into(),
+                    Err(error) => {
+                        this.error = Some(format!("Could not capture screenshot: {error}").into())
+                    }
+                }
+                cx.notify();
+            })?;
+            anyhow::Ok(())
+        })
+        .detach();
+    }
     fn render_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tabs = self.tabs();
         let selected_tab = tabs.iter().position(|tab| *tab == self.tab).unwrap_or(0);
@@ -1974,7 +2044,7 @@ impl ByteTrawlApp {
                     .bg(rgb(PANEL))
                     .border_b_1()
                     .border_color(rgb(BORDER))
-                    .overflow_x_scroll()
+                    .overflow_x_scrollbar()
                     .child(
                         TabBar::new("inspector-tabs")
                             .underline()
@@ -2470,52 +2540,39 @@ impl ByteTrawlApp {
                 })
             })
             .collect();
-        let relations = self
-            .dependency_graph
-            .edges
-            .iter()
-            .take(24)
-            .map(|edge| {
-                let source = names
-                    .get(&edge.source)
-                    .cloned()
-                    .unwrap_or_else(|| "Artifact".into());
-                let target = edge
-                    .target
-                    .and_then(|id| names.get(&id).cloned())
-                    .unwrap_or_else(|| edge.requested.clone());
-                let color = match edge.status {
-                    bytetrawl_core::DependencyStatus::Bundled => GREEN,
-                    bytetrawl_core::DependencyStatus::System => ACCENT,
-                    bytetrawl_core::DependencyStatus::Missing => DESTRUCTIVE,
-                    bytetrawl_core::DependencyStatus::Unknown => WARNING,
-                };
+        let (visual_nodes, visual_edges, graph_height) =
+            dependency_visual_layout(&self.dependency_graph, 36);
+        let paint_nodes = visual_nodes.clone();
+        let paint_edges = visual_edges.clone();
+        let node_cards = visual_nodes
+            .into_iter()
+            .enumerate()
+            .map(|(index, node)| {
                 div()
+                    .id(("dependency-node", index))
+                    .absolute()
+                    .left(px(node.x))
+                    .top(px(node.y))
+                    .w(px(node.width))
+                    .h(px(38.))
+                    .px_3()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .w(px(180.))
-                            .p_2()
-                            .rounded_md()
-                            .bg(rgb(PANEL_2))
-                            .text_color(rgb(TEXT))
-                            .truncate()
-                            .child(source),
-                    )
-                    .child(div().text_color(rgb(color)).font_semibold().child("────▶"))
-                    .child(
-                        div()
-                            .flex_1()
-                            .p_2()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(rgb(color))
-                            .text_color(rgb(TEXT))
-                            .truncate()
-                            .child(target),
-                    )
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(node.color))
+                    .bg(rgb(PANEL_2))
+                    .text_xs()
+                    .text_color(rgb(TEXT))
+                    .truncate()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(SELECTION)))
+                    .when_some(node.id, |card, id| {
+                        card.on_click(
+                            cx.listener(move |this, _, _, cx| this.activate_tree_node(id, cx)),
+                        )
+                    })
+                    .child(node.label)
             })
             .collect::<Vec<_>>();
         div()
@@ -2534,10 +2591,53 @@ impl ByteTrawlApp {
                     .border_1()
                     .border_color(rgb(BORDER))
                     .bg(rgb(PANEL))
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .children(relations),
+                    .overflow_x_scrollbar()
+                    .child(
+                        div()
+                            .relative()
+                            .w(px(980.))
+                            .h(px(graph_height))
+                            .child(
+                                canvas(
+                                    move |_, _, _| {},
+                                    move |bounds, _, window, _| {
+                                        for edge in &paint_edges {
+                                            let source = &paint_nodes[edge.source];
+                                            let target = &paint_nodes[edge.target];
+                                            let start = point(
+                                                bounds.origin.x + px(source.x + source.width),
+                                                bounds.origin.y + px(source.y + 19.),
+                                            );
+                                            let end = point(
+                                                bounds.origin.x + px(target.x),
+                                                bounds.origin.y + px(target.y + 19.),
+                                            );
+                                            let control_x = start.x + (end.x - start.x) / 2.;
+                                            let mut builder = PathBuilder::stroke(px(1.5));
+                                            builder.move_to(start);
+                                            builder.line_to(point(control_x, start.y));
+                                            builder.line_to(point(control_x, end.y));
+                                            builder.line_to(end);
+                                            if let Ok(path) = builder.build() {
+                                                window.paint_path(path, rgb(edge.color));
+                                            }
+                                            let mut arrow = PathBuilder::stroke(px(1.5));
+                                            arrow.move_to(point(end.x - px(7.), end.y - px(4.)));
+                                            arrow.line_to(end);
+                                            arrow.line_to(point(end.x - px(7.), end.y + px(4.)));
+                                            if let Ok(path) = arrow.build() {
+                                                window.paint_path(path, rgb(edge.color));
+                                            }
+                                        }
+                                    },
+                                )
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full(),
+                            )
+                            .children(node_cards),
+                    ),
             )
             .child(table_panel(
                 "Dependency Table",
@@ -4397,7 +4497,7 @@ impl ByteTrawlApp {
             .gap_3()
             .child(panel_title("Inspection Findings"))
             .child(div().flex().flex_wrap().gap_2().children(filters))
-            .children(visible.iter().map(|f| {
+            .children(visible.iter().enumerate().map(|(finding_index, f)| {
                 let color = match f.severity {
                     Severity::Info => ACCENT,
                     Severity::Low => GREEN,
@@ -4445,27 +4545,48 @@ impl ByteTrawlApp {
                                 .flex()
                                 .flex_col()
                                 .gap_1()
-                                .children(f.evidence.iter().map(|evidence| {
-                                    div()
-                                        .flex()
-                                        .gap_2()
-                                        .text_xs()
-                                        .child(
-                                            div()
-                                                .w(px(140.))
-                                                .text_color(rgb(MUTED))
-                                                .child(evidence.label.clone()),
-                                        )
-                                        .child(div().text_color(rgb(TEXT)).child(
-                                            match evidence.offset {
-                                                Some(offset) => format!(
-                                                    "{} · offset 0x{offset:x}",
-                                                    evidence.value
-                                                ),
-                                                None => evidence.value.clone(),
-                                            },
-                                        ))
-                                })),
+                                .children(f.evidence.iter().enumerate().map(
+                                    |(evidence_index, evidence)| {
+                                        let offset = evidence.offset;
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "finding-evidence-{finding_index}-{evidence_index}"
+                                            )))
+                                            .flex()
+                                            .gap_2()
+                                            .text_xs()
+                                            .when(offset.is_some(), |row| {
+                                                row.cursor_pointer()
+                                                    .hover(|style| style.bg(rgb(SELECTION)))
+                                            })
+                                            .when_some(offset, |row, offset| {
+                                                row.on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.hex_offset = offset;
+                                                    this.hex_selection = Some((offset, offset + 1));
+                                                    this.tab = InspectorTab::Hex;
+                                                    this.status =
+                                                        format!("Finding evidence at 0x{offset:x}")
+                                                            .into();
+                                                    cx.notify();
+                                                }))
+                                            })
+                                            .child(
+                                                div()
+                                                    .w(px(140.))
+                                                    .text_color(rgb(MUTED))
+                                                    .child(evidence.label.clone()),
+                                            )
+                                            .child(div().text_color(rgb(TEXT)).child(
+                                                match evidence.offset {
+                                                    Some(offset) => format!(
+                                                        "{} · offset 0x{offset:x}",
+                                                        evidence.value
+                                                    ),
+                                                    None => evidence.value.clone(),
+                                                },
+                                            ))
+                                    },
+                                )),
                         )
                     })
             }))
@@ -4681,10 +4802,19 @@ impl Render for ByteTrawlApp {
             )
             .child(
                 h_resizable("workspace-panels")
+                    .on_resize(|state, _, cx| {
+                        let sizes = state.read(cx).sizes();
+                        if sizes.len() == 3 {
+                            let mut preferences = load_ui_preferences();
+                            preferences.sidebar_width = sizes[0].as_f32().clamp(180., 520.);
+                            preferences.inspector_width = sizes[2].as_f32().clamp(240., 560.);
+                            let _ = store_ui_preferences(&preferences);
+                        }
+                    })
                     .child(
                         resizable_panel()
                             .visible(self.show_sidebar)
-                            .size(px(280.))
+                            .size(px(self.sidebar_width))
                             .size_range(px(180.)..px(520.))
                             .child(self.render_sidebar(cx)),
                     )
@@ -4696,7 +4826,7 @@ impl Render for ByteTrawlApp {
                     .child(
                         resizable_panel()
                             .visible(self.show_inspector)
-                            .size(px(320.))
+                            .size(px(self.inspector_width))
                             .size_range(px(240.)..px(560.))
                             .child(self.render_details(cx)),
                     ),
@@ -5063,6 +5193,87 @@ fn entropy_color(value: f64) -> u32 {
     } else {
         ACCENT
     }
+}
+
+fn dependency_visual_layout(
+    graph: &DependencyGraph,
+    edge_limit: usize,
+) -> (Vec<DependencyVisualNode>, Vec<DependencyVisualEdge>, f32) {
+    let names = graph
+        .nodes
+        .iter()
+        .map(|node| (node.artifact_id, node.name.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut nodes = Vec::new();
+    let mut sources = indexmap::IndexMap::<uuid::Uuid, usize>::new();
+    let mut targets = indexmap::IndexMap::<String, usize>::new();
+    let mut edges = Vec::new();
+
+    for edge in graph.edges.iter().take(edge_limit) {
+        let source = *sources.entry(edge.source).or_insert_with(|| {
+            let index = nodes.len();
+            nodes.push(DependencyVisualNode {
+                id: Some(edge.source),
+                label: truncate_chart_label(
+                    names
+                        .get(&edge.source)
+                        .map(String::as_str)
+                        .unwrap_or("Artifact"),
+                    26,
+                ),
+                x: 32.,
+                y: 0.,
+                width: 220.,
+                color: ACCENT,
+            });
+            index
+        });
+        let target_key = edge
+            .target
+            .map(|id| format!("artifact:{id}"))
+            .unwrap_or_else(|| format!("requested:{}", edge.requested));
+        let status_color = match edge.status {
+            bytetrawl_core::DependencyStatus::Bundled => GREEN,
+            bytetrawl_core::DependencyStatus::System => ACCENT,
+            bytetrawl_core::DependencyStatus::Missing => DESTRUCTIVE,
+            bytetrawl_core::DependencyStatus::Unknown => WARNING,
+        };
+        let target = *targets.entry(target_key).or_insert_with(|| {
+            let index = nodes.len();
+            let target_id = edge.target;
+            let label = target_id
+                .and_then(|id| names.get(&id).cloned())
+                .unwrap_or_else(|| edge.requested.clone());
+            nodes.push(DependencyVisualNode {
+                id: target_id,
+                label: truncate_chart_label(&label, 32),
+                x: 650.,
+                y: 0.,
+                width: 280.,
+                color: status_color,
+            });
+            index
+        });
+        edges.push(DependencyVisualEdge {
+            source,
+            target,
+            color: status_color,
+        });
+    }
+
+    let source_indices = sources.values().copied().collect::<Vec<_>>();
+    let target_indices = targets.values().copied().collect::<Vec<_>>();
+    let rows = source_indices.len().max(target_indices.len()).max(1);
+    let height = (rows as f32 * 54. + 28.).max(260.);
+    let distribute = |indices: &[usize], nodes: &mut [DependencyVisualNode]| {
+        let step = (height - 54.) / indices.len().max(1) as f32;
+        for (row, index) in indices.iter().enumerate() {
+            nodes[*index].y = 14. + row as f32 * step;
+        }
+    };
+    distribute(&source_indices, &mut nodes);
+    distribute(&target_indices, &mut nodes);
+    (nodes, edges, height)
 }
 
 fn metric_card(
@@ -5680,6 +5891,12 @@ fn export_visual_report(_: &ExportVisualReport, cx: &mut App) {
     }
 }
 
+fn capture_window_screenshot(_: &CaptureWindowScreenshot, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| this.capture_window_screenshot(cx));
+    }
+}
+
 fn open_recent_from_menu(action: &OpenRecent, cx: &mut App) {
     if let Some(view) = active_bytetrawl_view(cx) {
         let path = action.path.clone();
@@ -5854,6 +6071,7 @@ fn install_menus(cx: &mut App) {
                 MenuItem::separator(),
                 MenuItem::action("Save Workspace…", SaveWorkspace),
                 MenuItem::action("Export Visual Report…", ExportVisualReport),
+                MenuItem::action("Capture Window Screenshot…", CaptureWindowScreenshot),
             ],
         },
         Menu {
@@ -5946,6 +6164,7 @@ fn main() {
         cx.on_action(layout_analysis);
         cx.on_action(toggle_high_contrast);
         cx.on_action(export_visual_report);
+        cx.on_action(capture_window_screenshot);
         cx.on_action(open_recent_from_menu);
         cx.bind_keys([
             KeyBinding::new("cmd-n", NewWindow, None),

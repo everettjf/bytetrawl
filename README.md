@@ -105,8 +105,8 @@ ByteTrawl is being developed as a **safe static triage, comparison, and release-
 - `File → New Window` creates an independent inspection session; the native Window menu tracks open windows.
 - Drag a file, application, package, workspace, or directory into the center to open it.
 - Resizable Artifact Tree, inspector, and Details regions with virtualized tables for large inputs.
-- Three saved workbench presets: **Standard**, **Focus**, and **Analysis**. Sidebar/inspector visibility persists across launches, while each `File → New Window` session keeps independent artifact and navigation state.
-- Optional high-contrast appearance and a shareable **File → Export Visual Report…** SVG dashboard generated locally from the current artifact.
+- Three saved workbench presets: **Standard**, **Focus**, and **Analysis**. Sidebar/inspector visibility and user-resized widths persist across launches, while each `File → New Window` session keeps independent artifact and navigation state.
+- Optional high-contrast appearance, a shareable **File → Export Visual Report…** SVG dashboard, and native interactive window screenshot capture. Reports and screenshots stay local.
 - A compact **External Tools…** menu shows compatible installed integrations first, distinguishes GUI launchers from captured command-line tools, and summarizes unavailable integrations without filling the Details pane with disabled buttons.
 - Workspaces preserve the artifact path, selected view, bookmarks, notes, and cached analysis results.
 - **File → Open Release Policy…** applies the same versioned IPA, Android, Windows,
@@ -183,7 +183,7 @@ ByteTrawl separates three levels of support: **audit** means platform-aware rele
 | Overview and Metadata | Kind, format, path, size, architecture, bitness, endian, entry point, image base, interpreter, parsed metadata, dependency/signature summaries and analysis errors |
 | Headers, Slices, Sections and Segments | Unified PE/Mach-O/ELF headers; Universal Mach-O slice selection; address/file layouts, flags and lazy section entropy |
 | Imports, Exports, Symbols and Relocations | Filterable, virtualized tables with names, addresses, libraries, relocation types, symbols and addends where the source format provides them |
-| Dependencies and Dependency Graph | Per-binary requested libraries plus artifact-wide visual source-to-target relationships and precision table; architecture and bundled/system/missing/unknown resolution with target paths |
+| Dependencies and Dependency Graph | Per-binary requested libraries plus a Canvas-rendered artifact-wide node graph with clickable source/target nodes and a precision table; architecture and bundled/system/missing/unknown resolution with target paths |
 | Size Lab | Metric cards, file-type donut, largest-file bars and an interactive treemap; comparison mode adds size waterfall, type deltas, top growth, duplicate savings and diff treemap |
 | Entropy | Distributed 64 KiB samples rendered as an Area Chart and heatmap; click a block to open its exact offset in Hex |
 | Strings | ASCII, UTF-8, UTF-16LE and UTF-16BE; file offsets, encodings, section names and virtual addresses where mapping exists |
@@ -194,7 +194,7 @@ ByteTrawl separates three levels of support: **audit** means platform-aware rele
 | Search | Artifact-wide search across names, metadata, symbols and strings, plus direct hexadecimal byte queries |
 | Workspaces | Artifact path, selected node/view, bookmarks, notes, tool configuration and cached analysis snapshot |
 | External tools | Explicit launch of compatible GUI tools; bounded, cancellable captured output for supported command-line tools; installed tools are prioritized |
-| Visual reports | Local, shareable SVG dashboard with artifact metrics, finding counts and file-type composition; no artifact bytes are uploaded |
+| Visual reports | Local, shareable SVG dashboard with artifact metrics, finding counts and file-type composition, plus native window screenshot capture; no artifact bytes are uploaded |
 
 ### CLI, reports and CI
 
