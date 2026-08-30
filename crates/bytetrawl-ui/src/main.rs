@@ -9,7 +9,7 @@ use bytetrawl_analysis::{
     search_node,
 };
 use bytetrawl_android::{AndroidAuditReportV1, audit_apk, is_apk};
-use bytetrawl_compare::{CompareReportV1, compare_artifacts};
+use bytetrawl_compare::{ChangeKind, CompareReportV1, compare_artifacts};
 use bytetrawl_core::{
     ArtifactKind, ArtifactNode, BinaryAnalysis, BinaryPlatform, DependencyGraph, FileSummary,
     Severity, SignatureInfo, Workspace,
@@ -42,6 +42,19 @@ struct ChartDatum {
     value: f64,
     bytes: u64,
     color: u32,
+}
+
+#[derive(Clone)]
+struct TreemapItem {
+    id: Option<uuid::Uuid>,
+    label: String,
+    bytes: u64,
+    delta: Option<i128>,
+    color: u32,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
 }
 
 const CHART_COLORS: [u32; 8] = [
@@ -137,6 +150,7 @@ enum InspectorTab {
     Signature,
     Metadata,
     Findings,
+    SizeLab,
 }
 
 impl InspectorTab {
@@ -175,6 +189,7 @@ impl InspectorTab {
             Self::Signature => "Signature",
             Self::Metadata => "Metadata",
             Self::Findings => "Findings",
+            Self::SizeLab => "Size Lab",
         }
     }
     fn from_label(label: &str) -> Option<Self> {
@@ -212,6 +227,7 @@ impl InspectorTab {
             Self::Signature,
             Self::Metadata,
             Self::Findings,
+            Self::SizeLab,
         ]
         .into_iter()
         .find(|tab| tab.label() == label)
@@ -1306,6 +1322,9 @@ impl ByteTrawlApp {
         }
         tabs.push(InspectorTab::Overview);
         if self.artifact.is_some() {
+            tabs.push(InspectorTab::SizeLab);
+        }
+        if self.artifact.is_some() {
             tabs.push(InspectorTab::DependencyGraph);
         }
         if binary {
@@ -2066,6 +2085,7 @@ impl ByteTrawlApp {
                 kv_panel("Metadata", self.combined_metadata()).into_any_element()
             }
             InspectorTab::Findings => self.render_findings().into_any_element(),
+            InspectorTab::SizeLab => self.render_size_lab(cx).into_any_element(),
             InspectorTab::Hex => self.render_hex(node, cx).into_any_element(),
             InspectorTab::Strings => self.render_strings(cx).into_any_element(),
             InspectorTab::Signature => self.render_signature().into_any_element(),
@@ -2367,6 +2387,41 @@ impl ByteTrawlApp {
                 report.duplicate_groups.len().to_string(),
             ),
         ];
+        let reclaimable_bytes = report
+            .duplicate_groups
+            .iter()
+            .map(|group| group.reclaimable_bytes)
+            .sum::<u64>();
+        let type_chart = report
+            .type_deltas
+            .iter()
+            .filter(|item| item.delta_bytes != 0)
+            .map(|item| ChartDatum {
+                label: truncate_chart_label(&item.file_type, 14),
+                value: item.delta_bytes as f64,
+                bytes: item.delta_bytes.unsigned_abs().min(u64::MAX as u128) as u64,
+                color: if item.delta_bytes > 0 { HIGH } else { GREEN },
+            })
+            .collect::<Vec<_>>();
+        let growth_chart = report
+            .largest_growth
+            .iter()
+            .take(10)
+            .map(|change| ChartDatum {
+                label: truncate_chart_label(
+                    &change
+                        .path
+                        .file_name()
+                        .map(|name| name.to_string_lossy())
+                        .unwrap_or_else(|| change.path.to_string_lossy()),
+                    14,
+                ),
+                value: change.delta_bytes as f64,
+                bytes: change.delta_bytes.unsigned_abs().min(u64::MAX as u128) as u64,
+                color: HIGH,
+            })
+            .collect::<Vec<_>>();
+        let diff_treemap = comparison_treemap(report, 48);
         if let Some(ipa) = report.ipa.as_ref() {
             for change in &ipa.identity {
                 summary.push((
@@ -2494,6 +2549,60 @@ impl ByteTrawlApp {
             .flex()
             .flex_col()
             .gap_5()
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .child(metric_card(
+                        "BASELINE",
+                        format_size(report.before_bytes),
+                        "Previous artifact",
+                        0x6fa7c8,
+                    ))
+                    .child(metric_card(
+                        "CANDIDATE",
+                        format_size(report.after_bytes),
+                        "Current artifact",
+                        GREEN,
+                    ))
+                    .child(metric_card(
+                        "DELTA",
+                        format_signed_size(report.delta_bytes),
+                        "Net size change",
+                        if report.delta_bytes > 0 { HIGH } else { GREEN },
+                    ))
+                    .child(metric_card(
+                        "CHANGED",
+                        report.files.len().to_string(),
+                        "File changes",
+                        ACCENT,
+                    ))
+                    .child(metric_card(
+                        "RECLAIMABLE",
+                        format_size(reclaimable_bytes),
+                        "Duplicate bytes",
+                        0xb58ad6,
+                    )),
+            )
+            .child(comparison_waterfall(report))
+            .when(!type_chart.is_empty(), |comparison| {
+                comparison.child(bar_chart_card(
+                    "Size delta by file type",
+                    type_chart,
+                    "delta",
+                ))
+            })
+            .when(!growth_chart.is_empty(), |comparison| {
+                comparison.child(bar_chart_card("Top growth", growth_chart, "delta"))
+            })
+            .when(!diff_treemap.is_empty(), |comparison| {
+                comparison.child(self.render_treemap_panel(
+                    "Changed-file treemap",
+                    diff_treemap,
+                    cx,
+                ))
+            })
             .child(kv_panel("Artifact Comparison", summary))
             .child(table_panel(
                 "Contents & Size Changes",
@@ -3503,6 +3612,123 @@ impl ByteTrawlApp {
             )
             .into_any_element()
     }
+    fn render_size_lab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(root) = self.artifact.as_deref() else {
+            return empty_state().into_any_element();
+        };
+        let files = root.files().collect::<Vec<_>>();
+        let total_bytes = files.iter().map(|node| node.size).sum::<u64>();
+        let treemap = artifact_treemap(root, 48);
+        let types = artifact_type_breakdown(root);
+        let largest = artifact_top_files(root, 12);
+        div()
+            .flex()
+            .flex_col()
+            .gap_5()
+            .child(
+                div()
+                    .flex()
+                    .items_end()
+                    .justify_between()
+                    .child(
+                        div().child(panel_title("Size Lab")).child(
+                            div()
+                                .mt_1()
+                                .text_sm()
+                                .text_color(rgb(MUTED))
+                                .child("Explore where artifact size is concentrated."),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_semibold()
+                            .text_color(rgb(GREEN))
+                            .child(format!(
+                                "{} · {} files",
+                                format_size(total_bytes),
+                                files.len()
+                            )),
+                    ),
+            )
+            .child(self.render_treemap_panel("Artifact treemap", treemap, cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_4()
+                    .when(!types.is_empty(), |charts| {
+                        charts.child(donut_chart_card("Size by file type", types))
+                    })
+                    .when(!largest.is_empty(), |charts| {
+                        charts.child(bar_chart_card("Largest files", largest, "size"))
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn render_treemap_panel(
+        &self,
+        title: &'static str,
+        items: Vec<TreemapItem>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .p_4()
+            .rounded_lg()
+            .border_1()
+            .border_color(rgb(BORDER))
+            .bg(rgb(PANEL))
+            .child(panel_title(title))
+            .child(
+                div()
+                    .mt_3()
+                    .relative()
+                    .w_full()
+                    .h(px(430.))
+                    .overflow_hidden()
+                    .rounded_lg()
+                    .bg(rgb(BG))
+                    .children(items.into_iter().enumerate().map(|(index, item)| {
+                        let id = item.id;
+                        let label = item.label.clone();
+                        let detail = item
+                            .delta
+                            .map(format_signed_size)
+                            .unwrap_or_else(|| format_size(item.bytes));
+                        div()
+                            .id(SharedString::from(format!("treemap-item-{index}")))
+                            .absolute()
+                            .left(relative(item.x))
+                            .top(relative(item.y))
+                            .w(relative(item.width))
+                            .h(relative(item.height))
+                            .p_2()
+                            .border_1()
+                            .border_color(rgb(BG))
+                            .bg(rgb(item.color))
+                            .overflow_hidden()
+                            .cursor_pointer()
+                            .hover(|style| style.opacity(0.84))
+                            .when_some(id, |tile, id| {
+                                tile.on_click(cx.listener(move |this, _, _, cx| {
+                                    this.activate_tree_node(id, cx)
+                                }))
+                            })
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_semibold()
+                                    .text_color(rgb(BG))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .child(label),
+                            )
+                            .child(div().mt_1().text_xs().text_color(rgb(BG)).child(detail))
+                    })),
+            )
+    }
+
     fn render_overview(&self, node: &ArtifactNode) -> impl IntoElement {
         let a = self.current_analysis();
         let files = node.files().collect::<Vec<_>>();
@@ -4434,6 +4660,207 @@ fn artifact_top_files(root: &ArtifactNode, limit: usize) -> Vec<ChartDatum> {
         .collect()
 }
 
+fn artifact_treemap(root: &ArtifactNode, limit: usize) -> Vec<TreemapItem> {
+    let mut files = root
+        .files()
+        .filter(|node| node.size > 0)
+        .map(|node| (node.id, node.name.clone(), node.size, node.kind))
+        .collect::<Vec<_>>();
+    files.sort_by_key(|file| std::cmp::Reverse(file.2));
+    let mut items = files
+        .into_iter()
+        .take(limit)
+        .enumerate()
+        .map(|(index, (id, label, bytes, kind))| TreemapItem {
+            id: Some(id),
+            label,
+            bytes,
+            delta: None,
+            color: artifact_kind_color(kind, index),
+            x: 0.,
+            y: 0.,
+            width: 1.,
+            height: 1.,
+        })
+        .collect::<Vec<_>>();
+    layout_treemap(&mut items, 0., 0., 1., 1., 0);
+    items
+}
+
+fn artifact_kind_color(kind: ArtifactKind, index: usize) -> u32 {
+    match kind {
+        ArtifactKind::Executable => GREEN,
+        ArtifactKind::DynamicLibrary | ArtifactKind::StaticLibrary | ArtifactKind::Framework => {
+            0x6fa7c8
+        }
+        ArtifactKind::Resource => ACCENT,
+        ArtifactKind::Metadata => 0xb58ad6,
+        ArtifactKind::Archive | ArtifactKind::Package => HIGH,
+        _ => CHART_COLORS[index % CHART_COLORS.len()],
+    }
+}
+
+fn layout_treemap(
+    items: &mut [TreemapItem],
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    depth: usize,
+) {
+    if items.is_empty() {
+        return;
+    }
+    if items.len() == 1 {
+        items[0].x = x;
+        items[0].y = y;
+        items[0].width = width;
+        items[0].height = height;
+        return;
+    }
+    let total = items.iter().map(|item| item.bytes.max(1)).sum::<u64>();
+    let target = total / 2;
+    let mut subtotal = 0u64;
+    let mut split = 1usize;
+    for (index, item) in items.iter().enumerate().take(items.len() - 1) {
+        subtotal = subtotal.saturating_add(item.bytes.max(1));
+        split = index + 1;
+        if subtotal >= target {
+            break;
+        }
+    }
+    let ratio = (subtotal as f32 / total as f32).clamp(0.08, 0.92);
+    let (left, right) = items.split_at_mut(split);
+    if (width >= height) ^ (depth % 2 == 1 && width / height < 1.35) {
+        let left_width = width * ratio;
+        layout_treemap(left, x, y, left_width, height, depth + 1);
+        layout_treemap(
+            right,
+            x + left_width,
+            y,
+            width - left_width,
+            height,
+            depth + 1,
+        );
+    } else {
+        let top_height = height * ratio;
+        layout_treemap(left, x, y, width, top_height, depth + 1);
+        layout_treemap(
+            right,
+            x,
+            y + top_height,
+            width,
+            height - top_height,
+            depth + 1,
+        );
+    }
+}
+
+fn comparison_treemap(report: &CompareReportV1, limit: usize) -> Vec<TreemapItem> {
+    let mut changes = report.files.iter().collect::<Vec<_>>();
+    changes.sort_by_key(|change| std::cmp::Reverse(change.delta_bytes.unsigned_abs()));
+    let mut items = changes
+        .into_iter()
+        .filter(|change| change.delta_bytes != 0)
+        .take(limit)
+        .map(|change| TreemapItem {
+            id: None,
+            label: change
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| change.path.display().to_string()),
+            bytes: change.delta_bytes.unsigned_abs().min(u64::MAX as u128) as u64,
+            delta: Some(change.delta_bytes),
+            color: match change.kind {
+                ChangeKind::Added => HIGH,
+                ChangeKind::Removed => GREEN,
+                ChangeKind::Modified if change.delta_bytes > 0 => WARNING,
+                ChangeKind::Modified => 0x6fa7c8,
+            },
+            x: 0.,
+            y: 0.,
+            width: 1.,
+            height: 1.,
+        })
+        .collect::<Vec<_>>();
+    layout_treemap(&mut items, 0., 0., 1., 1., 0);
+    items
+}
+
+fn comparison_waterfall(report: &CompareReportV1) -> impl IntoElement {
+    let added = report
+        .files
+        .iter()
+        .filter(|change| change.delta_bytes > 0)
+        .map(|change| change.delta_bytes)
+        .sum::<i128>();
+    let removed = report
+        .files
+        .iter()
+        .filter(|change| change.delta_bytes < 0)
+        .map(|change| change.delta_bytes)
+        .sum::<i128>();
+    div()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(rgb(BORDER))
+        .bg(rgb(PANEL))
+        .child(panel_title("Size waterfall"))
+        .child(
+            div()
+                .mt_4()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(waterfall_step(
+                    "Baseline",
+                    format_size(report.before_bytes),
+                    0x6fa7c8,
+                ))
+                .child(waterfall_arrow())
+                .child(waterfall_step("Growth", format_signed_size(added), HIGH))
+                .child(waterfall_arrow())
+                .child(waterfall_step(
+                    "Reduction",
+                    format_signed_size(removed),
+                    GREEN,
+                ))
+                .child(waterfall_arrow())
+                .child(waterfall_step(
+                    "Candidate",
+                    format_size(report.after_bytes),
+                    ACCENT,
+                )),
+        )
+}
+
+fn waterfall_step(label: &'static str, value: String, color: u32) -> impl IntoElement {
+    div()
+        .flex_1()
+        .min_w(px(120.))
+        .p_3()
+        .rounded_lg()
+        .border_1()
+        .border_color(rgb(color))
+        .bg(rgb(BG))
+        .child(div().text_xs().text_color(rgb(MUTED)).child(label))
+        .child(
+            div()
+                .mt_1()
+                .text_lg()
+                .font_semibold()
+                .text_color(rgb(color))
+                .child(value),
+        )
+}
+
+fn waterfall_arrow() -> impl IntoElement {
+    div().text_lg().text_color(rgb(MUTED)).child("→")
+}
+
 fn finding_severity_data(findings: &[bytetrawl_core::Finding]) -> Vec<ChartDatum> {
     severity_chart_data(findings.iter().map(|finding| finding.severity))
 }
@@ -4553,6 +4980,8 @@ fn bar_chart_card(
                     .label(move |datum| {
                         if unit == "size" {
                             format_size(datum.bytes)
+                        } else if unit == "delta" {
+                            format_signed_size(datum.value as i128)
                         } else {
                             format!("{:.0}", datum.value)
                         }
