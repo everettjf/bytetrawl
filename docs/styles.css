@@ -7,7 +7,7 @@ a { color:inherit; text-decoration:none; }
 .shell { width:min(1180px,calc(100% - 48px)); margin-inline:auto; }
 .nav { position:sticky; top:0; z-index:20; height:68px; padding:0 max(24px,calc((100vw - 1180px)/2)); display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid rgba(48,45,38,.8); background:rgba(14,13,11,.86); backdrop-filter:blur(18px); }
 .brand { display:flex; align-items:center; gap:11px; font-size:17px; font-weight:700; letter-spacing:-.02em; }
-.brand-mark { display:grid; place-items:center; width:30px; height:30px; color:var(--bg); background:var(--green); border-radius:5px; font:800 11px/1 ui-monospace,SFMono-Regular,monospace; box-shadow:0 0 24px rgba(154,207,104,.12); }
+.brand-icon { display:block; width:34px; height:34px; object-fit:contain; filter:drop-shadow(0 0 12px rgba(154,207,104,.14)); }
 nav { display:flex; align-items:center; gap:30px; color:var(--muted); font-size:13px; }
 nav a:hover { color:var(--text); }
 .nav-release { color:var(--green); }
