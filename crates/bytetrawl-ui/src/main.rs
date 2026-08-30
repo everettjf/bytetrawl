@@ -2,11 +2,11 @@
 
 use bytetrawl::file_search::{FileSearchMode, parse_search_bytes};
 use bytetrawl_analysis::{
-    AnalysisCache, CancellationToken, ExtractedString, HashOptions, HexReader, SearchHit,
-    analyze_node, annotate_string_locations, apply_signature_analysis, build_dependency_graph,
-    enrich_analysis_entropy, extract_strings_node_cancellable, global_search_cached, hash_file,
-    inspect_metadata, inspect_signature_cancellable, open_artifact, resolve_dependencies,
-    search_node,
+    AnalysisCache, ArtifactReader, CancellationToken, ExtractedString, HashOptions, HexReader,
+    SearchHit, analyze_node, annotate_string_locations, apply_signature_analysis,
+    build_dependency_graph, enrich_analysis_entropy, entropy, extract_strings_node_cancellable,
+    global_search_cached, hash_file, inspect_metadata, inspect_signature_cancellable,
+    open_artifact, resolve_dependencies, search_node,
 };
 use bytetrawl_android::{AndroidAuditReportV1, audit_apk, is_apk};
 use bytetrawl_compare::{ChangeKind, CompareReportV1, compare_artifacts};
@@ -28,7 +28,7 @@ use gpui_component::{
     Disableable, Root, Sizable, StyledExt, Theme, ThemeMode,
     badge::Badge,
     button::{Button, ButtonVariants as _},
-    chart::{BarChart, PieChart},
+    chart::{AreaChart, BarChart, PieChart},
     input::{Copy, Cut, Input, InputEvent, InputState, Paste, Redo, SelectAll, Undo},
     menu::{DropdownMenu as _, PopupMenuItem},
     progress::Progress,
@@ -55,6 +55,13 @@ struct TreemapItem {
     y: f32,
     width: f32,
     height: f32,
+}
+
+#[derive(Clone)]
+struct EntropySample {
+    label: String,
+    offset: u64,
+    entropy: f64,
 }
 
 const CHART_COLORS: [u32; 8] = [
@@ -151,6 +158,7 @@ enum InspectorTab {
     Metadata,
     Findings,
     SizeLab,
+    Entropy,
 }
 
 impl InspectorTab {
@@ -190,6 +198,7 @@ impl InspectorTab {
             Self::Metadata => "Metadata",
             Self::Findings => "Findings",
             Self::SizeLab => "Size Lab",
+            Self::Entropy => "Entropy",
         }
     }
     fn from_label(label: &str) -> Option<Self> {
@@ -228,6 +237,7 @@ impl InspectorTab {
             Self::Metadata,
             Self::Findings,
             Self::SizeLab,
+            Self::Entropy,
         ]
         .into_iter()
         .find(|tab| tab.label() == label)
@@ -258,6 +268,8 @@ struct ByteTrawlApp {
     search_hits: Arc<Vec<SearchHit>>,
     dependency_graph: Arc<DependencyGraph>,
     dependency_graph_loaded: bool,
+    entropy_profile: Arc<Vec<EntropySample>>,
+    entropy_loaded: bool,
     hex_offset: u64,
     hex_selection: Option<(u64, u64)>,
     search_input: Entity<InputState>,
@@ -281,6 +293,7 @@ struct ByteTrawlApp {
     error: Option<SharedString>,
     show_sidebar: bool,
     show_inspector: bool,
+    finding_filter: Option<Severity>,
 }
 
 impl ByteTrawlApp {
@@ -330,6 +343,8 @@ impl ByteTrawlApp {
             search_hits: Arc::default(),
             dependency_graph: Arc::default(),
             dependency_graph_loaded: false,
+            entropy_profile: Arc::default(),
+            entropy_loaded: false,
             hex_offset: 0,
             hex_selection: None,
             search_input,
@@ -353,6 +368,7 @@ impl ByteTrawlApp {
             error: None,
             show_sidebar: true,
             show_inspector: true,
+            finding_filter: None,
         }
     }
     fn choose(&mut self, folder: bool, cx: &mut Context<Self>) {
@@ -713,6 +729,8 @@ impl ByteTrawlApp {
         self.signature_loaded = false;
         self.strings = Arc::default();
         self.strings_loaded = false;
+        self.entropy_profile = Arc::default();
+        self.entropy_loaded = false;
         self.hex_offset = 0;
         self.hex_selection = None;
         self.tab = InspectorTab::Overview;
@@ -794,6 +812,8 @@ impl ByteTrawlApp {
         self.tab = tab;
         if tab == InspectorTab::Strings && !self.strings_loaded {
             self.load_strings(cx);
+        } else if tab == InspectorTab::Entropy && !self.entropy_loaded {
+            self.load_entropy_profile(cx);
         } else if tab == InspectorTab::DependencyGraph && !self.dependency_graph_loaded {
             self.load_dependency_graph(cx);
         } else if tab == InspectorTab::Signature
@@ -957,6 +977,45 @@ impl ByteTrawlApp {
                     Err(error) => {
                         this.error = Some(error.to_string().into());
                         this.status = "String extraction incomplete".into();
+                    }
+                }
+                cx.notify();
+            })?;
+            anyhow::Ok(())
+        })
+        .detach();
+    }
+    fn load_entropy_profile(&mut self, cx: &mut Context<Self>) {
+        let Some(node) = self.selected_node().filter(|node| node.is_file()).cloned() else {
+            return;
+        };
+        self.cancellation.cancel();
+        self.cancellation = CancellationToken::default();
+        self.task_generation = self.task_generation.wrapping_add(1);
+        let generation = self.task_generation;
+        let cancellation = self.cancellation.clone();
+        self.loading = true;
+        self.status = format!("Sampling entropy across {}…", node.name).into();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { sample_entropy_profile(&node, &cancellation) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.task_generation != generation {
+                    return;
+                }
+                this.loading = false;
+                match result {
+                    Ok(samples) => {
+                        let count = samples.len();
+                        this.entropy_profile = Arc::new(samples);
+                        this.entropy_loaded = true;
+                        this.status = format!("Entropy profile ready · {count} samples").into();
+                    }
+                    Err(error) => {
+                        this.error = Some(error.to_string().into());
+                        this.status = "Entropy profile incomplete".into();
                     }
                 }
                 cx.notify();
@@ -1356,6 +1415,7 @@ impl ByteTrawlApp {
                     }
                 }
                 tabs.extend([InspectorTab::Strings, InspectorTab::Hex]);
+                tabs.push(InspectorTab::Entropy);
                 if analysis.signature.is_some() || self.container_signature.is_some() {
                     tabs.push(InspectorTab::Signature);
                 }
@@ -1368,6 +1428,7 @@ impl ByteTrawlApp {
             }
         } else if self.selected_node().is_some_and(ArtifactNode::is_file) {
             tabs.push(InspectorTab::Hex);
+            tabs.push(InspectorTab::Entropy);
             if !self.metadata.is_empty() {
                 tabs.push(InspectorTab::Metadata);
             }
@@ -2084,11 +2145,12 @@ impl ByteTrawlApp {
             InspectorTab::Metadata => {
                 kv_panel("Metadata", self.combined_metadata()).into_any_element()
             }
-            InspectorTab::Findings => self.render_findings().into_any_element(),
+            InspectorTab::Findings => self.render_findings(cx).into_any_element(),
             InspectorTab::SizeLab => self.render_size_lab(cx).into_any_element(),
             InspectorTab::Hex => self.render_hex(node, cx).into_any_element(),
             InspectorTab::Strings => self.render_strings(cx).into_any_element(),
             InspectorTab::Signature => self.render_signature().into_any_element(),
+            InspectorTab::Entropy => self.render_entropy(cx).into_any_element(),
         }
     }
     fn render_search(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2331,12 +2393,123 @@ impl ByteTrawlApp {
                 })
             })
             .collect();
-        table_panel(
-            "Artifact Dependency Graph",
-            &["Source", "Architecture", "Requested", "Status", "Target"],
-            rows,
-            cx,
-        )
+        let relations = self
+            .dependency_graph
+            .edges
+            .iter()
+            .take(24)
+            .map(|edge| {
+                let source = names
+                    .get(&edge.source)
+                    .cloned()
+                    .unwrap_or_else(|| "Artifact".into());
+                let target = edge
+                    .target
+                    .and_then(|id| names.get(&id).cloned())
+                    .unwrap_or_else(|| edge.requested.clone());
+                let color = match edge.status {
+                    bytetrawl_core::DependencyStatus::Bundled => GREEN,
+                    bytetrawl_core::DependencyStatus::System => ACCENT,
+                    bytetrawl_core::DependencyStatus::Missing => DESTRUCTIVE,
+                    bytetrawl_core::DependencyStatus::Unknown => WARNING,
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(180.))
+                            .p_2()
+                            .rounded_md()
+                            .bg(rgb(PANEL_2))
+                            .text_color(rgb(TEXT))
+                            .truncate()
+                            .child(source),
+                    )
+                    .child(div().text_color(rgb(color)).font_semibold().child("────▶"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .p_2()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(color))
+                            .text_color(rgb(TEXT))
+                            .truncate()
+                            .child(target),
+                    )
+            })
+            .collect::<Vec<_>>();
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(panel_title(format!(
+                "Dependency Map · {} nodes · {} edges",
+                self.dependency_graph.nodes.len(),
+                self.dependency_graph.edges.len()
+            )))
+            .child(
+                div()
+                    .p_4()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(PANEL))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .children(relations),
+            )
+            .child(table_panel(
+                "Dependency Table",
+                &["Source", "Architecture", "Requested", "Status", "Target"],
+                rows,
+                cx,
+            ))
+    }
+    fn render_entropy(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let samples = self.entropy_profile.as_ref().clone();
+        let chart_data = samples
+            .iter()
+            .map(|sample| ChartDatum {
+                label: sample.label.clone(),
+                value: sample.entropy,
+                bytes: sample.offset,
+                color: GREEN,
+            })
+            .collect::<Vec<_>>();
+        let cells = samples
+            .into_iter()
+            .enumerate()
+            .map(|(index, sample)| {
+                let color = entropy_color(sample.entropy);
+                div()
+                    .id(("entropy-cell", index))
+                    .w(px(34.))
+                    .h(px(34.))
+                    .rounded_sm()
+                    .bg(rgb(color))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.hex_offset = sample.offset;
+                        this.tab = InspectorTab::Hex;
+                        this.status = format!("Entropy sample at 0x{:x}", sample.offset).into();
+                        cx.notify();
+                    }))
+            })
+            .collect::<Vec<_>>();
+        div().flex().flex_col().gap_4()
+            .child(panel_title("Entropy Profile"))
+            .child(div().p_4().rounded_lg().border_1().border_color(rgb(BORDER)).bg(rgb(PANEL)).h(px(260.)).child(
+                AreaChart::new(chart_data).x(|item| item.label.clone()).y(|item| item.value)
+                    .stroke(rgb(GREEN)).fill(rgba(0x43e86b33))
+            ))
+            .child(info_panel("Block heatmap", "Each cell is a distributed 64 KiB sample. Brighter orange cells approach 8 bits/byte and can indicate compression or encryption. Click a cell to inspect its bytes."))
+            .child(div().flex().flex_wrap().gap_1().children(cells))
     }
     fn render_signature(&self) -> impl IntoElement {
         let values = self
@@ -2368,7 +2541,46 @@ impl ByteTrawlApp {
                 values
             })
             .unwrap_or_else(|| vec![("Status".into(), "No host signature result".into())]);
-        kv_panel("Digital Signature", values)
+        let identity = values
+            .iter()
+            .any(|(key, value)| key == "Signer" && !value.is_empty());
+        let timestamp = values
+            .iter()
+            .any(|(key, value)| key == "Timestamp" && !value.is_empty());
+        let trust_status = values
+            .first()
+            .map(|value| value.1.clone())
+            .unwrap_or_else(|| "Unknown".into());
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(panel_title("Signature Trust Path"))
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(metric_card("1 · PARSED", "✓", "Signature envelope", GREEN))
+                    .child(metric_card(
+                        "2 · IDENTITY",
+                        if identity { "✓" } else { "—" },
+                        "Signer identity",
+                        if identity { GREEN } else { WARNING },
+                    ))
+                    .child(metric_card(
+                        "3 · TIMESTAMP",
+                        if timestamp { "✓" } else { "—" },
+                        "Trusted timestamp",
+                        if timestamp { GREEN } else { WARNING },
+                    ))
+                    .child(metric_card(
+                        "4 · TRUST",
+                        trust_status,
+                        "Host verification",
+                        ACCENT,
+                    )),
+            )
+            .child(kv_panel("Digital Signature", values))
     }
     fn render_comparison(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(report) = self.comparison.as_deref() else {
@@ -3346,6 +3558,89 @@ impl ByteTrawlApp {
             .into_any_element()
     }
     fn render_ipa_targets(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let matrix =
+            self.ipa_report.as_deref().map(|report| {
+                let mut architectures = report
+                    .targets
+                    .iter()
+                    .flat_map(|target| target.architectures.iter().cloned())
+                    .collect::<Vec<_>>();
+                architectures.sort();
+                architectures.dedup();
+                let rows = report
+                    .targets
+                    .iter()
+                    .map(|target| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div().w(px(220.)).truncate().text_color(rgb(TEXT)).child(
+                                    target
+                                        .metadata
+                                        .bundle_identifier
+                                        .clone()
+                                        .unwrap_or_else(|| target.path.display().to_string()),
+                                ),
+                            )
+                            .children(architectures.iter().map(|architecture| {
+                                let present = target.architectures.contains(architecture);
+                                div()
+                                    .w(px(88.))
+                                    .text_center()
+                                    .rounded_sm()
+                                    .bg(rgb(if present { SELECTION } else { PANEL_2 }))
+                                    .text_color(rgb(if present { GREEN } else { MUTED }))
+                                    .child(if present { "✓" } else { "—" })
+                            }))
+                            .child(
+                                div()
+                                    .w(px(88.))
+                                    .text_center()
+                                    .rounded_sm()
+                                    .bg(rgb(if target.has_privacy_manifest {
+                                        SELECTION
+                                    } else {
+                                        PANEL_2
+                                    }))
+                                    .text_color(rgb(if target.has_privacy_manifest {
+                                        GREEN
+                                    } else {
+                                        WARNING
+                                    }))
+                                    .child(if target.has_privacy_manifest {
+                                        "✓"
+                                    } else {
+                                        "—"
+                                    }),
+                            )
+                    })
+                    .collect::<Vec<_>>();
+                div()
+                    .p_4()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(PANEL))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(rgb(MUTED))
+                            .child(div().w(px(220.)).child("TARGET"))
+                            .children(architectures.into_iter().map(|architecture| {
+                                div().w(px(88.)).text_center().child(architecture)
+                            }))
+                            .child(div().w(px(88.)).text_center().child("PRIVACY")),
+                    )
+                    .children(rows)
+            });
         let rows = self
             .ipa_report
             .as_deref()
@@ -3374,12 +3669,18 @@ impl ByteTrawlApp {
                     .collect()
             })
             .unwrap_or_default();
-        table_panel(
-            "Embedded Targets",
-            &["Kind", "Bundle ID", "Architectures", "Privacy", "Path"],
-            rows,
-            cx,
-        )
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(panel_title("Architecture & Privacy Matrix"))
+            .children(matrix)
+            .child(table_panel(
+                "Embedded Targets",
+                &["Kind", "Bundle ID", "Architectures", "Privacy", "Path"],
+                rows,
+                cx,
+            ))
     }
     fn render_ipa_privacy(&self) -> impl IntoElement {
         let Some(report) = self.ipa_report.as_deref() else {
@@ -3464,7 +3765,43 @@ impl ByteTrawlApp {
                 .iter()
                 .map(|(key, value)| (format!("Entitlement · {key}"), value.clone())),
         );
-        kv_panel("Provisioning & Entitlements", values).into_any_element()
+        let has_team = signing.team_id.is_some();
+        let has_app = signing.application_identifier.is_some();
+        let has_expiration = signing.expiration.is_some();
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(panel_title("Provisioning Timeline"))
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(metric_card("1 · PROFILE", "✓", "Decoded", GREEN))
+                    .child(metric_card(
+                        "2 · TEAM",
+                        if has_team { "✓" } else { "—" },
+                        "Identity",
+                        if has_team { GREEN } else { WARNING },
+                    ))
+                    .child(metric_card(
+                        "3 · APP ID",
+                        if has_app { "✓" } else { "—" },
+                        "Entitlement",
+                        if has_app { GREEN } else { WARNING },
+                    ))
+                    .child(metric_card(
+                        "4 · EXPIRY",
+                        if has_expiration { "✓" } else { "—" },
+                        signing
+                            .expiration
+                            .map(|value| value.format("%Y-%m-%d").to_string())
+                            .unwrap_or_else(|| "Unknown".into()),
+                        if has_expiration { ACCENT } else { WARNING },
+                    )),
+            )
+            .child(kv_panel("Provisioning & Entitlements", values))
+            .into_any_element()
     }
     fn render_ipa_findings(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let findings = self
@@ -3932,17 +4269,58 @@ impl ByteTrawlApp {
             })
             .child(kv_panel("Overview", values))
     }
-    fn render_findings(&self) -> impl IntoElement {
+    fn render_findings(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let findings = self
             .current_analysis()
             .map(|a| a.findings.as_slice())
             .unwrap_or(&[]);
+        let filters = [
+            None,
+            Some(Severity::Critical),
+            Some(Severity::High),
+            Some(Severity::Medium),
+            Some(Severity::Low),
+            Some(Severity::Info),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, filter)| {
+            let selected = self.finding_filter == filter;
+            let label = filter
+                .map(|severity| format!("{severity:?}"))
+                .unwrap_or_else(|| "All".into());
+            div()
+                .id(("finding-filter", index))
+                .px_3()
+                .py_1()
+                .rounded_full()
+                .cursor_pointer()
+                .border_1()
+                .border_color(rgb(if selected { GREEN } else { BORDER }))
+                .bg(rgb(if selected { SELECTION } else { PANEL }))
+                .text_sm()
+                .text_color(rgb(if selected { GREEN } else { MUTED }))
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.finding_filter = filter;
+                    cx.notify();
+                }))
+        })
+        .collect::<Vec<_>>();
+        let visible = findings
+            .iter()
+            .filter(|finding| {
+                self.finding_filter
+                    .is_none_or(|severity| finding.severity == severity)
+            })
+            .collect::<Vec<_>>();
         div()
             .flex()
             .flex_col()
             .gap_3()
             .child(panel_title("Inspection Findings"))
-            .children(findings.iter().map(|f| {
+            .child(div().flex().flex_wrap().gap_2().children(filters))
+            .children(visible.iter().map(|f| {
                 let color = match f.severity {
                     Severity::Info => ACCENT,
                     Severity::Low => GREEN,
@@ -4014,7 +4392,7 @@ impl ByteTrawlApp {
                         )
                     })
             }))
-            .when(findings.is_empty(), |d| {
+            .when(visible.is_empty(), |d| {
                 d.child(info_panel(
                     "No findings",
                     "No inspection findings were produced by the lightweight analysis.",
@@ -4565,6 +4943,47 @@ fn format_signed_size(value: i128) -> String {
     };
     let magnitude = value.unsigned_abs().min(u64::MAX as u128) as u64;
     format!("{sign}{}", format_size(magnitude))
+}
+
+fn sample_entropy_profile(
+    node: &ArtifactNode,
+    cancellation: &CancellationToken,
+) -> bytetrawl_core::Result<Vec<EntropySample>> {
+    let reader = ArtifactReader::open(node)?;
+    let length = reader.len();
+    if length == 0 {
+        return Ok(Vec::new());
+    }
+    const SAMPLE_BYTES: usize = 64 * 1024;
+    const MAX_SAMPLES: u64 = 128;
+    let count = length.div_ceil(SAMPLE_BYTES as u64).clamp(1, MAX_SAMPLES);
+    let stride = length.div_ceil(count);
+    let mut samples = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        cancellation.check()?;
+        let offset = index.saturating_mul(stride).min(length.saturating_sub(1));
+        let bytes = reader.read_range_cancellable(offset, SAMPLE_BYTES, cancellation)?;
+        samples.push(EntropySample {
+            label: format!("{:x}", offset),
+            offset,
+            entropy: entropy(&bytes),
+        });
+    }
+    Ok(samples)
+}
+
+fn entropy_color(value: f64) -> u32 {
+    if value >= 7.5 {
+        DESTRUCTIVE
+    } else if value >= 6.5 {
+        HIGH
+    } else if value >= 5.0 {
+        WARNING
+    } else if value >= 2.5 {
+        GREEN
+    } else {
+        ACCENT
+    }
 }
 
 fn metric_card(
