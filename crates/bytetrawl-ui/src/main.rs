@@ -28,12 +28,25 @@ use gpui_component::{
     Disableable, Root, Sizable, StyledExt, Theme, ThemeMode,
     badge::Badge,
     button::{Button, ButtonVariants as _},
+    chart::{BarChart, PieChart},
     input::{Copy, Cut, Input, InputEvent, InputState, Paste, Redo, SelectAll, Undo},
     menu::{DropdownMenu as _, PopupMenuItem},
     progress::Progress,
     resizable::{h_resizable, resizable_panel},
     tab::{Tab, TabBar},
 };
+
+#[derive(Clone)]
+struct ChartDatum {
+    label: String,
+    value: f64,
+    bytes: u64,
+    color: u32,
+}
+
+const CHART_COLORS: [u32; 8] = [
+    GREEN, ACCENT, 0x6fa7c8, 0xb58ad6, HIGH, 0x72b5a4, 0xc5ad68, 0x8b9bb4,
+];
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
@@ -2520,61 +2533,113 @@ impl ByteTrawlApp {
         };
         let total_methods: u64 = report.dex.iter().map(|dex| dex.methods as u64).sum();
         let total_classes: u64 = report.dex.iter().map(|dex| dex.classes as u64).sum();
-        kv_panel(
-            "Android Release Audit",
-            vec![
-                (
-                    "Package".into(),
-                    report
-                        .identity
-                        .package
-                        .clone()
-                        .unwrap_or_else(|| "—".into()),
+        let severity_data =
+            severity_chart_data(report.findings.iter().map(|finding| finding.severity));
+        let values = vec![
+            (
+                "Package".into(),
+                report
+                    .identity
+                    .package
+                    .clone()
+                    .unwrap_or_else(|| "—".into()),
+            ),
+            (
+                "Version / Code".into(),
+                format!(
+                    "{} / {}",
+                    report.identity.version_name.as_deref().unwrap_or("—"),
+                    report.identity.version_code.as_deref().unwrap_or("—")
                 ),
-                (
-                    "Version / Code".into(),
-                    format!(
-                        "{} / {}",
-                        report.identity.version_name.as_deref().unwrap_or("—"),
-                        report.identity.version_code.as_deref().unwrap_or("—")
-                    ),
+            ),
+            (
+                "Min / Target SDK".into(),
+                format!(
+                    "{} / {}",
+                    report.identity.min_sdk.as_deref().unwrap_or("—"),
+                    report.identity.target_sdk.as_deref().unwrap_or("—")
                 ),
-                (
-                    "Min / Target SDK".into(),
-                    format!(
-                        "{} / {}",
-                        report.identity.min_sdk.as_deref().unwrap_or("—"),
-                        report.identity.target_sdk.as_deref().unwrap_or("—")
-                    ),
-                ),
-                ("Permissions".into(), report.permissions.len().to_string()),
-                ("Components".into(), report.components.len().to_string()),
-                ("DEX files".into(), report.dex.len().to_string()),
-                ("DEX methods".into(), total_methods.to_string()),
-                ("DEX classes".into(), total_classes.to_string()),
-                (
-                    "Native libraries".into(),
-                    report.native_libraries.len().to_string(),
-                ),
-                (
-                    "resources.arsc".into(),
-                    report
-                        .resources_arsc_bytes
-                        .map(format_size)
-                        .unwrap_or_else(|| "Missing".into()),
-                ),
-                (
-                    "Signing".into(),
-                    if report.signing_schemes.is_empty() {
-                        "Not detected".into()
-                    } else {
-                        report.signing_schemes.join(", ")
-                    },
-                ),
-                ("Findings".into(), report.findings.len().to_string()),
-            ],
-        )
-        .into_any_element()
+            ),
+            ("Permissions".into(), report.permissions.len().to_string()),
+            ("Components".into(), report.components.len().to_string()),
+            ("DEX files".into(), report.dex.len().to_string()),
+            ("DEX methods".into(), total_methods.to_string()),
+            ("DEX classes".into(), total_classes.to_string()),
+            (
+                "Native libraries".into(),
+                report.native_libraries.len().to_string(),
+            ),
+            (
+                "resources.arsc".into(),
+                report
+                    .resources_arsc_bytes
+                    .map(format_size)
+                    .unwrap_or_else(|| "Missing".into()),
+            ),
+            (
+                "Signing".into(),
+                if report.signing_schemes.is_empty() {
+                    "Not detected".into()
+                } else {
+                    report.signing_schemes.join(", ")
+                },
+            ),
+            ("Findings".into(), report.findings.len().to_string()),
+        ];
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(panel_title("Android Release Audit"))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .child(metric_card(
+                        "PERMISSIONS",
+                        report.permissions.len().to_string(),
+                        "Declared access",
+                        WARNING,
+                    ))
+                    .child(metric_card(
+                        "COMPONENTS",
+                        report.components.len().to_string(),
+                        "Activities & services",
+                        ACCENT,
+                    ))
+                    .child(metric_card(
+                        "DEX METHODS",
+                        total_methods.to_string(),
+                        "Across all DEX files",
+                        0x6fa7c8,
+                    ))
+                    .child(metric_card(
+                        "NATIVE LIBS",
+                        report.native_libraries.len().to_string(),
+                        "Packaged ABIs",
+                        0xb58ad6,
+                    ))
+                    .child(metric_card(
+                        "FINDINGS",
+                        report.findings.len().to_string(),
+                        "Release audit",
+                        if report.findings.is_empty() {
+                            GREEN
+                        } else {
+                            HIGH
+                        },
+                    )),
+            )
+            .when(!severity_data.is_empty(), |summary| {
+                summary.child(bar_chart_card(
+                    "Android finding severity",
+                    severity_data,
+                    "findings",
+                ))
+            })
+            .child(kv_panel("Package details", values))
+            .into_any_element()
     }
     fn render_android_components(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self
@@ -2676,58 +2741,118 @@ impl ByteTrawlApp {
         let Some(report) = self.windows_report.as_deref() else {
             return empty_state().into_any_element();
         };
-        kv_panel(
-            "Windows Package Release Audit",
-            vec![
-                (
-                    "Name".into(),
-                    report.identity.name.clone().unwrap_or_default(),
-                ),
-                (
-                    "Display name".into(),
-                    report.identity.display_name.clone().unwrap_or_default(),
-                ),
-                (
-                    "Publisher".into(),
-                    report.identity.publisher.clone().unwrap_or_default(),
-                ),
-                (
-                    "Version".into(),
-                    report.identity.version.clone().unwrap_or_default(),
-                ),
-                (
-                    "Architecture".into(),
-                    report
-                        .identity
-                        .processor_architecture
-                        .clone()
-                        .unwrap_or_default(),
-                ),
-                (
-                    "Target families".into(),
-                    report
-                        .target_device_families
-                        .iter()
-                        .map(|family| family.name.clone())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                ),
-                ("Capabilities".into(), report.capabilities.join(", ")),
-                (
-                    "Restricted capabilities".into(),
-                    report.restricted_capabilities.join(", "),
-                ),
-                ("Applications".into(), report.applications.len().to_string()),
-                (
-                    "Executable members".into(),
-                    report.executable_members.len().to_string(),
-                ),
-                ("Signature".into(), report.signature_present.to_string()),
-                ("Block map".into(), report.block_map_present.to_string()),
-                ("Findings".into(), report.findings.len().to_string()),
-            ],
-        )
-        .into_any_element()
+        let severity_data =
+            severity_chart_data(report.findings.iter().map(|finding| finding.severity));
+        let values = vec![
+            (
+                "Name".into(),
+                report.identity.name.clone().unwrap_or_default(),
+            ),
+            (
+                "Display name".into(),
+                report.identity.display_name.clone().unwrap_or_default(),
+            ),
+            (
+                "Publisher".into(),
+                report.identity.publisher.clone().unwrap_or_default(),
+            ),
+            (
+                "Version".into(),
+                report.identity.version.clone().unwrap_or_default(),
+            ),
+            (
+                "Architecture".into(),
+                report
+                    .identity
+                    .processor_architecture
+                    .clone()
+                    .unwrap_or_default(),
+            ),
+            (
+                "Target families".into(),
+                report
+                    .target_device_families
+                    .iter()
+                    .map(|family| family.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+            ("Capabilities".into(), report.capabilities.join(", ")),
+            (
+                "Restricted capabilities".into(),
+                report.restricted_capabilities.join(", "),
+            ),
+            ("Applications".into(), report.applications.len().to_string()),
+            (
+                "Executable members".into(),
+                report.executable_members.len().to_string(),
+            ),
+            ("Signature".into(), report.signature_present.to_string()),
+            ("Block map".into(), report.block_map_present.to_string()),
+            ("Findings".into(), report.findings.len().to_string()),
+        ];
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(panel_title("Windows Package Release Audit"))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .child(metric_card(
+                        "APPLICATIONS",
+                        report.applications.len().to_string(),
+                        "Declared entries",
+                        GREEN,
+                    ))
+                    .child(metric_card(
+                        "EXECUTABLES",
+                        report.executable_members.len().to_string(),
+                        "PE members",
+                        ACCENT,
+                    ))
+                    .child(metric_card(
+                        "CAPABILITIES",
+                        report.capabilities.len().to_string(),
+                        "Requested access",
+                        WARNING,
+                    ))
+                    .child(metric_card(
+                        "SIGNATURE",
+                        if report.signature_present {
+                            "Present"
+                        } else {
+                            "Missing"
+                        },
+                        "Package trust",
+                        if report.signature_present {
+                            GREEN
+                        } else {
+                            DESTRUCTIVE
+                        },
+                    ))
+                    .child(metric_card(
+                        "FINDINGS",
+                        report.findings.len().to_string(),
+                        "Release audit",
+                        if report.findings.is_empty() {
+                            GREEN
+                        } else {
+                            HIGH
+                        },
+                    )),
+            )
+            .when(!severity_data.is_empty(), |summary| {
+                summary.child(bar_chart_card(
+                    "Windows finding severity",
+                    severity_data,
+                    "findings",
+                ))
+            })
+            .child(kv_panel("Package details", values))
+            .into_any_element()
     }
     fn render_windows_applications(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self
@@ -2818,36 +2943,88 @@ impl ByteTrawlApp {
         let Some(report) = self.linux_report.as_deref() else {
             return empty_state().into_any_element();
         };
-        kv_panel(
-            "Debian Package Release Audit",
-            vec![
-                (
-                    "Package".into(),
-                    report.identity.package.clone().unwrap_or_default(),
-                ),
-                (
-                    "Version".into(),
-                    report.identity.version.clone().unwrap_or_default(),
-                ),
-                (
-                    "Architecture".into(),
-                    report.identity.architecture.clone().unwrap_or_default(),
-                ),
-                (
-                    "Maintainer".into(),
-                    report.identity.maintainer.clone().unwrap_or_default(),
-                ),
-                ("Dependencies".into(), report.identity.depends.join(", ")),
-                ("Installed bytes".into(), report.installed_bytes.to_string()),
-                ("Files".into(), report.files.len().to_string()),
-                (
-                    "Maintainer scripts".into(),
-                    report.maintainer_scripts.join(", "),
-                ),
-                ("Findings".into(), report.findings.len().to_string()),
-            ],
-        )
-        .into_any_element()
+        let severity_data =
+            severity_chart_data(report.findings.iter().map(|finding| finding.severity));
+        let values = vec![
+            (
+                "Package".into(),
+                report.identity.package.clone().unwrap_or_default(),
+            ),
+            (
+                "Version".into(),
+                report.identity.version.clone().unwrap_or_default(),
+            ),
+            (
+                "Architecture".into(),
+                report.identity.architecture.clone().unwrap_or_default(),
+            ),
+            (
+                "Maintainer".into(),
+                report.identity.maintainer.clone().unwrap_or_default(),
+            ),
+            ("Dependencies".into(), report.identity.depends.join(", ")),
+            ("Installed bytes".into(), report.installed_bytes.to_string()),
+            ("Files".into(), report.files.len().to_string()),
+            (
+                "Maintainer scripts".into(),
+                report.maintainer_scripts.join(", "),
+            ),
+            ("Findings".into(), report.findings.len().to_string()),
+        ];
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(panel_title("Debian Package Release Audit"))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .child(metric_card(
+                        "INSTALLED",
+                        format_size(report.installed_bytes),
+                        "Payload size",
+                        GREEN,
+                    ))
+                    .child(metric_card(
+                        "FILES",
+                        report.files.len().to_string(),
+                        "Installed entries",
+                        ACCENT,
+                    ))
+                    .child(metric_card(
+                        "DEPENDENCIES",
+                        report.identity.depends.len().to_string(),
+                        "Package requirements",
+                        0x6fa7c8,
+                    ))
+                    .child(metric_card(
+                        "SCRIPTS",
+                        report.maintainer_scripts.len().to_string(),
+                        "Maintainer hooks",
+                        WARNING,
+                    ))
+                    .child(metric_card(
+                        "FINDINGS",
+                        report.findings.len().to_string(),
+                        "Release audit",
+                        if report.findings.is_empty() {
+                            GREEN
+                        } else {
+                            HIGH
+                        },
+                    )),
+            )
+            .when(!severity_data.is_empty(), |summary| {
+                summary.child(bar_chart_card(
+                    "Linux finding severity",
+                    severity_data,
+                    "findings",
+                ))
+            })
+            .child(kv_panel("Package details", values))
+            .into_any_element()
     }
     fn render_linux_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self
@@ -2927,6 +3104,8 @@ impl ByteTrawlApp {
         let Some(report) = self.ipa_report.as_deref() else {
             return empty_state().into_any_element();
         };
+        let severity_data =
+            severity_chart_data(report.findings.iter().map(|finding| finding.severity));
         let mut values = vec![
             (
                 "Application".into(),
@@ -2999,6 +3178,61 @@ impl ByteTrawlApp {
                     .text_color(rgb(TEXT))
                     .child("iOS Release Audit"),
             )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .child(metric_card(
+                        "INSTALLED",
+                        format_size(report.total_bytes),
+                        "Expanded payload",
+                        GREEN,
+                    ))
+                    .child(metric_card(
+                        "FILES",
+                        report.files.len().to_string(),
+                        "IPA members",
+                        ACCENT,
+                    ))
+                    .child(metric_card(
+                        "TARGETS",
+                        report.targets.len().to_string(),
+                        "Apps & extensions",
+                        0x6fa7c8,
+                    ))
+                    .child(metric_card(
+                        "PRIVACY",
+                        if report.has_privacy_manifest {
+                            "Ready"
+                        } else {
+                            "Missing"
+                        },
+                        "Privacy manifest",
+                        if report.has_privacy_manifest {
+                            GREEN
+                        } else {
+                            WARNING
+                        },
+                    ))
+                    .child(metric_card(
+                        "FINDINGS",
+                        report.findings.len().to_string(),
+                        "Release audit",
+                        if report.findings.is_empty() {
+                            GREEN
+                        } else {
+                            HIGH
+                        },
+                    )),
+            )
+            .when(!severity_data.is_empty(), |summary| {
+                summary.child(bar_chart_card(
+                    "iOS finding severity",
+                    severity_data,
+                    "findings",
+                ))
+            })
             .child(kv_panel("Application", values))
             .into_any_element()
     }
@@ -3271,6 +3505,38 @@ impl ByteTrawlApp {
     }
     fn render_overview(&self, node: &ArtifactNode) -> impl IntoElement {
         let a = self.current_analysis();
+        let files = node.files().collect::<Vec<_>>();
+        let total_file_bytes = files.iter().map(|file| file.size).sum::<u64>();
+        let type_breakdown = artifact_type_breakdown(node);
+        let top_files = artifact_top_files(node, 8);
+        let finding_data = finding_severity_data(
+            a.map(|analysis| analysis.findings.as_slice())
+                .unwrap_or_default(),
+        );
+        let executable_count = files
+            .iter()
+            .filter(|file| {
+                matches!(
+                    file.kind,
+                    ArtifactKind::Executable
+                        | ArtifactKind::DynamicLibrary
+                        | ArtifactKind::StaticLibrary
+                        | ArtifactKind::Framework
+                )
+            })
+            .count();
+        let dependency_count = a.map(|analysis| analysis.dependencies.len()).unwrap_or(0);
+        let high_findings = a
+            .map(|analysis| {
+                analysis
+                    .findings
+                    .iter()
+                    .filter(|finding| {
+                        matches!(finding.severity, Severity::Critical | Severity::High)
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
         let mut values = vec![
             ("Type".into(), format!("{:?}", node.kind)),
             (
@@ -3371,7 +3637,7 @@ impl ByteTrawlApp {
         div()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap_5()
             .child(
                 div()
                     .text_2xl()
@@ -3379,6 +3645,65 @@ impl ByteTrawlApp {
                     .text_color(rgb(TEXT))
                     .child(node.name.clone()),
             )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .child(metric_card(
+                        "TOTAL SIZE",
+                        format_size(total_file_bytes),
+                        "On-disk contents",
+                        GREEN,
+                    ))
+                    .child(metric_card(
+                        "FILES",
+                        files.len().to_string(),
+                        "Discovered members",
+                        ACCENT,
+                    ))
+                    .child(metric_card(
+                        "BINARIES",
+                        executable_count.to_string(),
+                        "Executables & libraries",
+                        0x6fa7c8,
+                    ))
+                    .child(metric_card(
+                        "DEPENDENCIES",
+                        dependency_count.to_string(),
+                        "Linked requirements",
+                        0xb58ad6,
+                    ))
+                    .child(metric_card(
+                        "HIGH RISK",
+                        high_findings.to_string(),
+                        "Critical & high findings",
+                        if high_findings > 0 {
+                            DESTRUCTIVE
+                        } else {
+                            GREEN
+                        },
+                    )),
+            )
+            .when(!type_breakdown.is_empty(), |dashboard| {
+                dashboard.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_4()
+                        .child(donut_chart_card("File type distribution", type_breakdown))
+                        .when(!top_files.is_empty(), |charts| {
+                            charts.child(bar_chart_card("Largest files", top_files, "size"))
+                        })
+                        .when(!finding_data.is_empty(), |charts| {
+                            charts.child(bar_chart_card(
+                                "Finding severity",
+                                finding_data,
+                                "findings",
+                            ))
+                        }),
+                )
+            })
             .child(kv_panel("Overview", values))
     }
     fn render_findings(&self) -> impl IntoElement {
@@ -4014,6 +4339,226 @@ fn format_signed_size(value: i128) -> String {
     };
     let magnitude = value.unsigned_abs().min(u64::MAX as u128) as u64;
     format!("{sign}{}", format_size(magnitude))
+}
+
+fn metric_card(
+    label: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+    color: u32,
+) -> impl IntoElement {
+    div()
+        .min_w(px(154.))
+        .flex_1()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(rgb(BORDER))
+        .bg(rgb(PANEL))
+        .child(
+            div()
+                .text_xs()
+                .font_semibold()
+                .text_color(rgb(color))
+                .child(label.into()),
+        )
+        .child(
+            div()
+                .mt_2()
+                .text_2xl()
+                .font_semibold()
+                .text_color(rgb(TEXT))
+                .child(value.into()),
+        )
+        .child(
+            div()
+                .mt_1()
+                .text_xs()
+                .text_color(rgb(MUTED))
+                .child(detail.into()),
+        )
+}
+
+fn artifact_type_breakdown(root: &ArtifactNode) -> Vec<ChartDatum> {
+    let mut totals = std::collections::BTreeMap::<String, u64>::new();
+    for node in root.files() {
+        let label = match node.kind {
+            ArtifactKind::Executable => "Executables",
+            ArtifactKind::DynamicLibrary | ArtifactKind::StaticLibrary => "Libraries",
+            ArtifactKind::Framework => "Frameworks",
+            ArtifactKind::Resource => "Resources",
+            ArtifactKind::Metadata => "Metadata",
+            ArtifactKind::Archive | ArtifactKind::Package => "Archives",
+            ArtifactKind::DiskImage => "Images",
+            _ => match node.format {
+                Some(bytetrawl_core::FileFormat::Image) => "Images",
+                Some(bytetrawl_core::FileFormat::Text) => "Text",
+                Some(bytetrawl_core::FileFormat::Json)
+                | Some(bytetrawl_core::FileFormat::Xml)
+                | Some(bytetrawl_core::FileFormat::Plist) => "Metadata",
+                _ => "Other",
+            },
+        };
+        *totals.entry(label.into()).or_default() += node.size;
+    }
+    let mut values = totals.into_iter().collect::<Vec<_>>();
+    values.sort_by_key(|value| std::cmp::Reverse(value.1));
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(index, (label, bytes))| ChartDatum {
+            label,
+            value: bytes as f64,
+            bytes,
+            color: CHART_COLORS[index % CHART_COLORS.len()],
+        })
+        .collect()
+}
+
+fn artifact_top_files(root: &ArtifactNode, limit: usize) -> Vec<ChartDatum> {
+    let mut files = root
+        .files()
+        .map(|node| (node.name.clone(), node.size))
+        .collect::<Vec<_>>();
+    files.sort_by_key(|file| std::cmp::Reverse(file.1));
+    files
+        .into_iter()
+        .take(limit)
+        .enumerate()
+        .map(|(index, (name, bytes))| ChartDatum {
+            label: truncate_chart_label(&name, 16),
+            value: bytes as f64,
+            bytes,
+            color: CHART_COLORS[index % CHART_COLORS.len()],
+        })
+        .collect()
+}
+
+fn finding_severity_data(findings: &[bytetrawl_core::Finding]) -> Vec<ChartDatum> {
+    severity_chart_data(findings.iter().map(|finding| finding.severity))
+}
+
+fn severity_chart_data(severities: impl IntoIterator<Item = Severity>) -> Vec<ChartDatum> {
+    let severities = severities.into_iter().collect::<Vec<_>>();
+    [
+        (Severity::Critical, "Critical", DESTRUCTIVE),
+        (Severity::High, "High", HIGH),
+        (Severity::Medium, "Medium", WARNING),
+        (Severity::Low, "Low", GREEN),
+        (Severity::Info, "Info", ACCENT),
+    ]
+    .into_iter()
+    .filter_map(|(severity, label, color)| {
+        let count = severities
+            .iter()
+            .filter(|value| **value == severity)
+            .count();
+        (count > 0).then(|| ChartDatum {
+            label: label.into(),
+            value: count as f64,
+            bytes: 0,
+            color,
+        })
+    })
+    .collect()
+}
+
+fn truncate_chart_label(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let prefix = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
+}
+
+fn donut_chart_card(title: &'static str, data: Vec<ChartDatum>) -> impl IntoElement {
+    let chart_data = data.clone();
+    div()
+        .min_w(px(360.))
+        .flex_1()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(rgb(BORDER))
+        .bg(rgb(PANEL))
+        .child(panel_title(title))
+        .child(
+            div()
+                .mt_3()
+                .flex()
+                .items_center()
+                .gap_4()
+                .child(
+                    div().w(px(210.)).h(px(190.)).child(
+                        PieChart::new(chart_data)
+                            .value(|datum| datum.value as f32)
+                            .inner_radius(58.)
+                            .pad_angle(0.018)
+                            .color(|datum| rgb(datum.color)),
+                    ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .children(data.into_iter().map(|datum| {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(div().size(px(8.)).rounded_full().bg(rgb(datum.color)))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_xs()
+                                        .text_color(rgb(MUTED))
+                                        .child(datum.label),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_semibold()
+                                        .text_color(rgb(TEXT))
+                                        .child(format_size(datum.bytes)),
+                                )
+                        })),
+                ),
+        )
+}
+
+fn bar_chart_card(
+    title: &'static str,
+    data: Vec<ChartDatum>,
+    unit: &'static str,
+) -> impl IntoElement {
+    div()
+        .min_w(px(420.))
+        .flex_1()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(rgb(BORDER))
+        .bg(rgb(PANEL))
+        .child(panel_title(title))
+        .child(
+            div().mt_3().h(px(220.)).child(
+                BarChart::new(data)
+                    .x(|datum| datum.label.clone())
+                    .y(|datum| datum.value)
+                    .fill(|datum| rgb(datum.color))
+                    .label(move |datum| {
+                        if unit == "size" {
+                            format_size(datum.bytes)
+                        } else {
+                            format!("{:.0}", datum.value)
+                        }
+                    }),
+            ),
+        )
 }
 
 fn configure_component_theme(cx: &mut App) {
