@@ -106,7 +106,7 @@ ByteTrawl is being developed as a **safe static triage, comparison, and release-
 - Drag a file, application, package, workspace, or directory into the center to open it.
 - Resizable Artifact Tree, inspector, and Details regions with virtualized tables for large inputs.
 - Three saved workbench presets: **Standard**, **Focus**, and **Analysis**. Sidebar/inspector visibility and user-resized widths persist across launches, while each `File → New Window` session keeps independent artifact and navigation state.
-- Optional high-contrast appearance, a shareable **File → Export Visual Report…** SVG dashboard, and native interactive window screenshot capture. Reports and screenshots stay local.
+- Optional high-contrast appearance, a prominent **Export Report** menu for comprehensive English Markdown/PDF analysis reports, a shareable SVG visual dashboard, and native interactive window screenshot capture. Exports stay local; Markdown and every PDF page end with **Powered by ByteTrawl** branding.
 - A compact **External Tools…** menu shows compatible installed integrations first, distinguishes GUI launchers from captured command-line tools, and summarizes unavailable integrations without filling the Details pane with disabled buttons.
 - Workspaces preserve the artifact path, selected view, bookmarks, notes, and cached analysis results.
 - **File → Open Release Policy…** applies the same versioned IPA, Android, Windows,
@@ -194,6 +194,7 @@ ByteTrawl separates three levels of support: **audit** means platform-aware rele
 | Search | Artifact-wide search across names, metadata, symbols and strings, plus direct hexadecimal byte queries |
 | Workspaces | Artifact path, selected node/view, bookmarks, notes, tool configuration and cached analysis snapshot |
 | External tools | Explicit launch of compatible GUI tools; bounded, cancellable captured output for supported command-line tools; installed tools are prioritized |
+| Report export | Comprehensive local English Markdown/PDF reports containing artifact summary, complete inventory, analysis coverage, cached binary/hash/entropy details, strings, dependency graph, signatures, platform audits, policy results, comparison data, bookmarks and notes; uncomputed optional dimensions are identified explicitly; every export carries Powered by ByteTrawl branding |
 | Visual reports | Local, shareable SVG dashboard with artifact metrics, finding counts and file-type composition, plus native window screenshot capture; no artifact bytes are uploaded |
 
 ### CLI, reports and CI

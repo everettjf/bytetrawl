@@ -1,6 +1,10 @@
 #![recursion_limit = "512"]
 
 use bytetrawl::file_search::{FileSearchMode, parse_search_bytes};
+use bytetrawl::report_export::{
+    ReportBlock, ReportDocument, ReportSection, render_markdown as render_analysis_markdown,
+    render_pdf as render_analysis_pdf,
+};
 use bytetrawl_analysis::{
     AnalysisCache, ArtifactReader, CancellationToken, ExtractedString, HashOptions, HexReader,
     SearchHit, analyze_node, annotate_string_locations, apply_signature_analysis,
@@ -27,7 +31,7 @@ use gpui::*;
 use gpui_component::{
     Disableable, PixelsExt, Root, Sizable, StyledExt, Theme, ThemeMode,
     badge::Badge,
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonVariants as _, DropdownButton},
     chart::{AreaChart, BarChart, PieChart},
     input::{Copy, Cut, Input, InputEvent, InputState, Paste, Redo, SelectAll, Undo},
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -115,6 +119,8 @@ actions!(
         LayoutFocus,
         LayoutAnalysis,
         ToggleHighContrast,
+        ExportMarkdownReport,
+        ExportPdfReport,
         ExportVisualReport,
         CaptureWindowScreenshot,
         SaveWorkspace,
@@ -122,6 +128,12 @@ actions!(
         Quit
     ]
 );
+
+#[derive(Clone, Copy)]
+enum AnalysisReportFormat {
+    Markdown,
+    Pdf,
+}
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = bytetrawl, no_json)]
@@ -1943,6 +1955,365 @@ impl ByteTrawlApp {
         }
         .into();
         cx.notify();
+    }
+
+    fn export_analysis_report(&mut self, format: AnalysisReportFormat, cx: &mut Context<Self>) {
+        let Some(root) = self.artifact.as_deref() else {
+            self.error = Some("Open an artifact before exporting an analysis report.".into());
+            cx.notify();
+            return;
+        };
+        let (file_name, label, extensions) = match format {
+            AnalysisReportFormat::Markdown => ("bytetrawl-analysis.md", "Markdown", &["md"][..]),
+            AnalysisReportFormat::Pdf => ("bytetrawl-analysis.pdf", "PDF", &["pdf"][..]),
+        };
+        let Some(destination) = rfd::FileDialog::new()
+            .set_title(format!("Export ByteTrawl {label} Report"))
+            .set_file_name(file_name)
+            .add_filter(format!("{label} report"), extensions)
+            .save_file()
+        else {
+            return;
+        };
+        let document = self.analysis_report_document(root);
+        let bytes = match format {
+            AnalysisReportFormat::Markdown => render_analysis_markdown(&document).into_bytes(),
+            AnalysisReportFormat::Pdf => render_analysis_pdf(&document),
+        };
+        match std::fs::write(&destination, bytes) {
+            Ok(()) => {
+                self.status = format!(
+                    "{label} analysis report exported · {}",
+                    destination.display()
+                )
+                .into()
+            }
+            Err(error) => {
+                self.error = Some(format!("Could not export {label} report: {error}").into())
+            }
+        }
+        cx.notify();
+    }
+
+    fn analysis_report_document(&self, root: &ArtifactNode) -> ReportDocument {
+        let files = root.files().collect::<Vec<_>>();
+        let total_bytes = files.iter().map(|node| node.size).sum::<u64>();
+        let snapshots = self.cache.snapshots_for_artifact(root);
+        let selected = self.selected_node();
+        let mut sections = vec![ReportSection {
+            title: "Artifact Summary".into(),
+            blocks: vec![
+                ReportBlock::KeyValues(vec![
+                    ("Name".into(), root.name.clone()),
+                    ("Path".into(), root.path.display().to_string()),
+                    ("Kind".into(), format!("{:?}", root.kind)),
+                    (
+                        "Format".into(),
+                        root.format
+                            .map(|format| format!("{format:?}"))
+                            .unwrap_or_else(|| "Container".into()),
+                    ),
+                    ("Discovered files".into(), files.len().to_string()),
+                    ("Discovered bytes".into(), format_size(total_bytes)),
+                    (
+                        "Selected object".into(),
+                        selected
+                            .map(|node| node.path.display().to_string())
+                            .unwrap_or_else(|| "None".into()),
+                    ),
+                ]),
+                ReportBlock::Paragraph(
+                    "This report contains the complete artifact inventory and every analysis result currently available in the ByteTrawl workspace. Optional expensive dimensions that have not been computed are identified in Analysis Coverage.".into(),
+                ),
+            ],
+        }];
+
+        if !root.properties.is_empty() {
+            sections.push(ReportSection {
+                title: "Artifact Properties".into(),
+                blocks: vec![ReportBlock::KeyValues(
+                    root.properties
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                )],
+            });
+        }
+
+        sections.push(ReportSection {
+            title: "Artifact Inventory".into(),
+            blocks: vec![ReportBlock::Table {
+                headers: vec!["Path".into(), "Kind".into(), "Format".into(), "Size".into()],
+                rows: files
+                    .iter()
+                    .map(|node| {
+                        vec![
+                            node.path.display().to_string(),
+                            format!("{:?}", node.kind),
+                            node.format
+                                .map(|format| format!("{format:?}"))
+                                .unwrap_or_default(),
+                            format_size(node.size),
+                        ]
+                    })
+                    .collect(),
+            }],
+        });
+
+        sections.push(ReportSection {
+            title: "Analysis Coverage".into(),
+            blocks: vec![ReportBlock::KeyValues(vec![
+                (
+                    "Files with cached analysis".into(),
+                    format!("{} of {}", snapshots.len(), files.len()),
+                ),
+                (
+                    "Selected-file strings".into(),
+                    if self.strings_loaded {
+                        format!("Computed ({} strings)", self.strings.len())
+                    } else {
+                        "Not computed".into()
+                    },
+                ),
+                (
+                    "Artifact dependency graph".into(),
+                    if self.dependency_graph_loaded {
+                        format!(
+                            "Computed ({} nodes, {} edges)",
+                            self.dependency_graph.nodes.len(),
+                            self.dependency_graph.edges.len()
+                        )
+                    } else {
+                        "Not computed".into()
+                    },
+                ),
+                (
+                    "Selected-file entropy profile".into(),
+                    if self.entropy_loaded {
+                        format!("Computed ({} samples)", self.entropy_profile.len())
+                    } else {
+                        "Not computed".into()
+                    },
+                ),
+                (
+                    "Host signature verification".into(),
+                    if self.signature_loaded {
+                        "Computed".into()
+                    } else {
+                        "Not computed".into()
+                    },
+                ),
+            ])],
+        });
+
+        if !snapshots.is_empty() {
+            sections.push(ReportSection {
+                title: "Analyzed Files".into(),
+                blocks: vec![ReportBlock::Table {
+                    headers: vec![
+                        "Path".into(),
+                        "Size".into(),
+                        "SHA-256".into(),
+                        "Entropy".into(),
+                        "Architecture".into(),
+                        "Findings".into(),
+                    ],
+                    rows: snapshots
+                        .iter()
+                        .map(|(path, snapshot)| {
+                            let analysis = snapshot.summary.analysis.as_ref();
+                            vec![
+                                path.clone(),
+                                format_size(snapshot.summary.size),
+                                snapshot.summary.sha256.clone().unwrap_or_default(),
+                                snapshot
+                                    .summary
+                                    .entropy
+                                    .map(|value| format!("{value:.4}"))
+                                    .unwrap_or_default(),
+                                analysis
+                                    .map(|analysis| analysis.architecture.clone())
+                                    .unwrap_or_default(),
+                                analysis
+                                    .map(|analysis| analysis.findings.len().to_string())
+                                    .unwrap_or_else(|| "0".into()),
+                            ]
+                        })
+                        .collect(),
+                }],
+            });
+            push_json_section(&mut sections, "Complete Cached Analysis Data", &snapshots);
+        }
+
+        if !self.metadata.is_empty() {
+            sections.push(ReportSection {
+                title: "Selected Object Metadata".into(),
+                blocks: vec![ReportBlock::KeyValues(
+                    self.metadata
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                )],
+            });
+        }
+
+        if self.strings_loaded {
+            sections.push(ReportSection {
+                title: "Selected Object Strings".into(),
+                blocks: vec![ReportBlock::Table {
+                    headers: vec![
+                        "Offset".into(),
+                        "Virtual address".into(),
+                        "Section".into(),
+                        "Encoding".into(),
+                        "Value".into(),
+                    ],
+                    rows: self
+                        .strings
+                        .iter()
+                        .map(|string| {
+                            vec![
+                                format!("0x{:x}", string.offset),
+                                string
+                                    .virtual_address
+                                    .map(|address| format!("0x{address:x}"))
+                                    .unwrap_or_default(),
+                                string.section.clone().unwrap_or_default(),
+                                format!("{:?}", string.encoding),
+                                string.value.clone(),
+                            ]
+                        })
+                        .collect(),
+                }],
+            });
+        }
+
+        if self.entropy_loaded {
+            sections.push(ReportSection {
+                title: "Selected Object Entropy Profile".into(),
+                blocks: vec![ReportBlock::Table {
+                    headers: vec!["Block".into(), "Offset".into(), "Entropy".into()],
+                    rows: self
+                        .entropy_profile
+                        .iter()
+                        .map(|sample| {
+                            vec![
+                                sample.label.clone(),
+                                format!("0x{:x}", sample.offset),
+                                format!("{:.4}", sample.entropy),
+                            ]
+                        })
+                        .collect(),
+                }],
+            });
+        }
+
+        if self.dependency_graph_loaded {
+            sections.push(ReportSection {
+                title: "Dependency Graph".into(),
+                blocks: vec![ReportBlock::Table {
+                    headers: vec![
+                        "Source".into(),
+                        "Architecture".into(),
+                        "Requested".into(),
+                        "Status".into(),
+                        "Resolved path".into(),
+                    ],
+                    rows: self
+                        .dependency_graph
+                        .edges
+                        .iter()
+                        .map(|edge| {
+                            let source = self
+                                .dependency_graph
+                                .nodes
+                                .iter()
+                                .find(|node| node.artifact_id == edge.source)
+                                .map(|node| node.name.clone())
+                                .unwrap_or_else(|| edge.source.to_string());
+                            vec![
+                                source,
+                                edge.source_architecture.clone().unwrap_or_default(),
+                                edge.requested.clone(),
+                                format!("{:?}", edge.status),
+                                edge.resolved_path
+                                    .as_ref()
+                                    .map(|path| path.display().to_string())
+                                    .unwrap_or_default(),
+                            ]
+                        })
+                        .collect(),
+                }],
+            });
+            push_json_section(
+                &mut sections,
+                "Complete Dependency Graph Data",
+                self.dependency_graph.as_ref(),
+            );
+        }
+
+        if let Some(signature) = self.container_signature.as_ref().or_else(|| {
+            self.current_analysis()
+                .and_then(|analysis| analysis.signature.as_ref())
+        }) {
+            push_json_section(&mut sections, "Signature and Trust", signature);
+        }
+        if let Some(report) = self.ipa_report.as_deref() {
+            push_json_section(&mut sections, "iOS IPA Audit", report);
+        }
+        if let Some(report) = self.android_report.as_deref() {
+            push_json_section(&mut sections, "Android APK Audit", report);
+        }
+        if let Some(report) = self.windows_report.as_deref() {
+            push_json_section(&mut sections, "Windows APPX/MSIX Audit", report);
+        }
+        if let Some(report) = self.linux_report.as_deref() {
+            push_json_section(&mut sections, "Debian Package Audit", report);
+        }
+        if let Some(report) = self.comparison.as_deref() {
+            push_json_section(&mut sections, "Artifact Comparison", report);
+        }
+
+        let violations = self.policy_violations();
+        if !violations.is_empty() {
+            push_json_section(&mut sections, "Release Policy Violations", &violations);
+        }
+
+        if !self.bookmarks.is_empty() || !self.notes.is_empty() {
+            let mut blocks = Vec::new();
+            if !self.bookmarks.is_empty() {
+                blocks.push(ReportBlock::Bullets(
+                    self.bookmarks
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect(),
+                ));
+            }
+            if !self.notes.is_empty() {
+                blocks.push(ReportBlock::Table {
+                    headers: vec!["Object".into(), "Note".into()],
+                    rows: self
+                        .notes
+                        .iter()
+                        .map(|(path, note)| vec![path.clone(), note.clone()])
+                        .collect(),
+                });
+            }
+            sections.push(ReportSection {
+                title: "Bookmarks and Notes".into(),
+                blocks,
+            });
+        }
+
+        push_json_section(&mut sections, "Complete Artifact Tree", root);
+        ReportDocument {
+            title: "ByteTrawl Analysis Report".into(),
+            subtitle: format!(
+                "Static, read-only inspection of {}. Generated locally by ByteTrawl.",
+                root.name
+            ),
+            sections,
+        }
     }
 
     fn export_visual_report(&mut self, cx: &mut Context<Self>) {
@@ -4657,10 +5028,24 @@ impl ByteTrawlApp {
     }
 }
 
+fn push_json_section<T: Serialize>(
+    sections: &mut Vec<ReportSection>,
+    title: impl Into<String>,
+    value: &T,
+) {
+    let json = serde_json::to_string_pretty(value)
+        .unwrap_or_else(|error| format!("Could not serialize report data: {error}"));
+    sections.push(ReportSection {
+        title: title.into(),
+        blocks: vec![ReportBlock::Code(json)],
+    });
+}
+
 impl Render for ByteTrawlApp {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let workspace_background = if self.high_contrast { 0x000000 } else { BG };
         let workspace_text = if self.high_contrast { 0xffffff } else { TEXT };
+        let report_menu_view = cx.entity();
         div()
             .size_full()
             .track_focus(&self.focus_handle)
@@ -4770,6 +5155,44 @@ impl Render for ByteTrawlApp {
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.copy_hex_chunk(cx)),
                                     ),
+                            )
+                            .child(
+                                DropdownButton::new("export-analysis-report")
+                                    .button(
+                                        Button::new("export-report-label")
+                                            .label("Export Report")
+                                            .tooltip("Export the complete available analysis"),
+                                    )
+                                    .primary()
+                                    .xsmall()
+                                    .compact()
+                                    .disabled(self.artifact.is_none())
+                                    .dropdown_menu(move |menu, window, _| {
+                                        menu.min_w(210.)
+                                            .item(
+                                                PopupMenuItem::new("Markdown Report (.md)")
+                                                    .on_click(window.listener_for(
+                                                        &report_menu_view,
+                                                        |this, _, _, cx| {
+                                                            this.export_analysis_report(
+                                                                AnalysisReportFormat::Markdown,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    )),
+                                            )
+                                            .item(PopupMenuItem::new("PDF Report (.pdf)").on_click(
+                                                window.listener_for(
+                                                    &report_menu_view,
+                                                    |this, _, _, cx| {
+                                                        this.export_analysis_report(
+                                                            AnalysisReportFormat::Pdf,
+                                                            cx,
+                                                        )
+                                                    },
+                                                ),
+                                            ))
+                                    }),
                             )
                             .when(self.loading, |toolbar| {
                                 toolbar
@@ -5879,6 +6302,22 @@ fn toggle_high_contrast(_: &ToggleHighContrast, cx: &mut App) {
     }
 }
 
+fn export_markdown_report(_: &ExportMarkdownReport, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| {
+            this.export_analysis_report(AnalysisReportFormat::Markdown, cx)
+        });
+    }
+}
+
+fn export_pdf_report(_: &ExportPdfReport, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| {
+            this.export_analysis_report(AnalysisReportFormat::Pdf, cx)
+        });
+    }
+}
+
 fn export_visual_report(_: &ExportVisualReport, cx: &mut App) {
     if let Some(view) = active_bytetrawl_view(cx) {
         view.update(cx, |this, cx| this.export_visual_report(cx));
@@ -6064,6 +6503,8 @@ fn install_menus(cx: &mut App) {
                 MenuItem::action("Compare Folders…", CompareFolders),
                 MenuItem::separator(),
                 MenuItem::action("Save Workspace…", SaveWorkspace),
+                MenuItem::action("Export Markdown Report…", ExportMarkdownReport),
+                MenuItem::action("Export PDF Report…", ExportPdfReport),
                 MenuItem::action("Export Visual Report…", ExportVisualReport),
                 MenuItem::action("Capture Window Screenshot…", CaptureWindowScreenshot),
             ],
@@ -6157,6 +6598,8 @@ fn main() {
         cx.on_action(layout_focus);
         cx.on_action(layout_analysis);
         cx.on_action(toggle_high_contrast);
+        cx.on_action(export_markdown_report);
+        cx.on_action(export_pdf_report);
         cx.on_action(export_visual_report);
         cx.on_action(capture_window_screenshot);
         cx.on_action(open_recent_from_menu);
