@@ -7,6 +7,8 @@
 
 ByteTrawl es un banco de trabajo multiplataforma, escrito en Rust, para el triaje estático seguro, la comparación y la auditoría de publicación de artefactos de software. Modela aplicaciones, directorios, paquetes y archivos como Artifacts para inspeccionar su estructura, metadatos, firmas, dependencias y binarios PE, Mach-O y ELF sin ejecutar el contenido analizado.
 
+La app incluye Size Lab y treemaps interactivos, gráfico de área y mapa de calor de entropía con salto a Hex, mapa de dependencias, cronologías de firma/provisioning, matriz IPA de arquitectura/privacidad, filtros de hallazgos, diseños guardados, alto contraste y exportación local de informes SVG.
+
 El [README en inglés](README.md#detailed-support-matrix) es la fuente canónica y contiene la matriz de soporte más detallada y actual. Instala la versión más reciente con los comandos Homebrew siguientes o descarga los archivos desde [GitHub Releases](https://github.com/everettjf/homebrew-tap/releases).
 
 ## Capturas

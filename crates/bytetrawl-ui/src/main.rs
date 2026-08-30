@@ -12,7 +12,7 @@ use bytetrawl_android::{AndroidAuditReportV1, audit_apk, is_apk};
 use bytetrawl_compare::{ChangeKind, CompareReportV1, compare_artifacts};
 use bytetrawl_core::{
     ArtifactKind, ArtifactNode, BinaryAnalysis, BinaryPlatform, DependencyGraph, FileSummary,
-    Severity, SignatureInfo, Workspace,
+    Finding, Severity, SignatureInfo, Workspace,
 };
 use bytetrawl_ios::{IpaAuditReportV1, audit_ipa};
 use bytetrawl_linux::{DebianReportV1, audit_deb, is_deb};
@@ -35,6 +35,7 @@ use gpui_component::{
     resizable::{h_resizable, resizable_panel},
     tab::{Tab, TabBar},
 };
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
 struct ChartDatum {
@@ -92,6 +93,11 @@ actions!(
         NewWindow,
         ToggleSidebar,
         ToggleInspector,
+        LayoutStandard,
+        LayoutFocus,
+        LayoutAnalysis,
+        ToggleHighContrast,
+        ExportVisualReport,
         SaveWorkspace,
         FocusSearch,
         Quit
@@ -108,6 +114,24 @@ struct OpenRecent {
 struct WindowViews(std::collections::HashMap<WindowId, WeakEntity<ByteTrawlApp>>);
 
 impl Global for WindowViews {}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct UiPreferences {
+    show_sidebar: bool,
+    show_inspector: bool,
+    high_contrast: bool,
+}
+
+impl Default for UiPreferences {
+    fn default() -> Self {
+        Self {
+            show_sidebar: true,
+            show_inspector: true,
+            high_contrast: false,
+        }
+    }
+}
 
 static STARTUP_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 
@@ -294,10 +318,12 @@ struct ByteTrawlApp {
     show_sidebar: bool,
     show_inspector: bool,
     finding_filter: Option<Severity>,
+    high_contrast: bool,
 }
 
 impl ByteTrawlApp {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let preferences = load_ui_preferences();
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window);
         let search_input = cx.new(|cx| {
@@ -366,9 +392,10 @@ impl ByteTrawlApp {
             task_generation: 0,
             status: "Ready — static inspection only".into(),
             error: None,
-            show_sidebar: true,
-            show_inspector: true,
+            show_sidebar: preferences.show_sidebar,
+            show_inspector: preferences.show_inspector,
             finding_filter: None,
+            high_contrast: preferences.high_contrast,
         }
     }
     fn choose(&mut self, folder: bool, cx: &mut Context<Self>) {
@@ -1864,6 +1891,56 @@ impl ByteTrawlApp {
             anyhow::Ok(())
         })
         .detach();
+    }
+
+    fn save_ui_preferences(&self) {
+        let _ = store_ui_preferences(&UiPreferences {
+            show_sidebar: self.show_sidebar,
+            show_inspector: self.show_inspector,
+            high_contrast: self.high_contrast,
+        });
+    }
+
+    fn apply_layout(&mut self, sidebar: bool, inspector: bool, cx: &mut Context<Self>) {
+        self.show_sidebar = sidebar;
+        self.show_inspector = inspector;
+        self.save_ui_preferences();
+        self.status = match (sidebar, inspector) {
+            (true, true) => "Standard workbench layout",
+            (false, false) => "Focus layout",
+            (true, false) => "Analysis layout",
+            (false, true) => "Inspector layout",
+        }
+        .into();
+        cx.notify();
+    }
+
+    fn export_visual_report(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.artifact.as_deref() else {
+            self.error = Some("Open an artifact before exporting a visual report.".into());
+            cx.notify();
+            return;
+        };
+        let destination = rfd::FileDialog::new()
+            .set_title("Export ByteTrawl Visual Report")
+            .set_file_name("bytetrawl-visual-report.svg")
+            .add_filter("Scalable Vector Graphic", &["svg"])
+            .save_file();
+        let Some(destination) = destination else {
+            return;
+        };
+        let findings = self
+            .current_analysis()
+            .map(|analysis| analysis.findings.as_slice())
+            .unwrap_or(&[]);
+        let report = visual_report_svg(root, findings);
+        match std::fs::write(&destination, report) {
+            Ok(()) => {
+                self.status = format!("Visual report exported · {}", destination.display()).into()
+            }
+            Err(error) => self.error = Some(format!("Could not export report: {error}").into()),
+        }
+        cx.notify();
     }
     fn render_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tabs = self.tabs();
@@ -4467,13 +4544,15 @@ impl ByteTrawlApp {
 
 impl Render for ByteTrawlApp {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let workspace_background = if self.high_contrast { 0x000000 } else { BG };
+        let workspace_text = if self.high_contrast { 0xffffff } else { TEXT };
         div()
             .size_full()
             .track_focus(&self.focus_handle)
             .flex()
             .flex_col()
-            .bg(rgb(BG))
-            .text_color(rgb(TEXT))
+            .bg(rgb(workspace_background))
+            .text_color(rgb(workspace_text))
             .on_action(cx.listener(|this, _: &OpenFile, _, cx| this.choose(false, cx)))
             .on_action(cx.listener(|this, _: &OpenArtifact, _, cx| this.choose(true, cx)))
             .on_action(cx.listener(|this, _: &OpenWorkspace, _, cx| this.open_workspace(cx)))
@@ -5410,9 +5489,13 @@ fn bar_chart_card(
 }
 
 fn configure_component_theme(cx: &mut App) {
+    configure_component_theme_mode(load_ui_preferences().high_contrast, cx);
+}
+
+fn configure_component_theme_mode(high_contrast: bool, cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
     let theme = Theme::global_mut(cx);
-    let background = rgb(BG).into();
+    let background = rgb(if high_contrast { 0x000000 } else { BG }).into();
     let panel = rgb(PANEL).into();
     let raised = rgb(PANEL_2).into();
     let border = rgb(BORDER).into();
@@ -5544,6 +5627,7 @@ fn toggle_sidebar(_: &ToggleSidebar, cx: &mut App) {
     if let Some(view) = active_bytetrawl_view(cx) {
         view.update(cx, |this, cx| {
             this.show_sidebar = !this.show_sidebar;
+            this.save_ui_preferences();
             cx.notify();
         });
     }
@@ -5553,8 +5637,46 @@ fn toggle_inspector(_: &ToggleInspector, cx: &mut App) {
     if let Some(view) = active_bytetrawl_view(cx) {
         view.update(cx, |this, cx| {
             this.show_inspector = !this.show_inspector;
+            this.save_ui_preferences();
             cx.notify();
         });
+    }
+}
+
+fn layout_standard(_: &LayoutStandard, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| this.apply_layout(true, true, cx));
+    }
+}
+
+fn layout_focus(_: &LayoutFocus, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| this.apply_layout(false, false, cx));
+    }
+}
+
+fn layout_analysis(_: &LayoutAnalysis, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| this.apply_layout(true, false, cx));
+    }
+}
+
+fn toggle_high_contrast(_: &ToggleHighContrast, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        let enabled = view.update(cx, |this, cx| {
+            this.high_contrast = !this.high_contrast;
+            this.save_ui_preferences();
+            cx.notify();
+            this.high_contrast
+        });
+        configure_component_theme_mode(enabled, cx);
+        cx.refresh_windows();
+    }
+}
+
+fn export_visual_report(_: &ExportVisualReport, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| this.export_visual_report(cx));
     }
 }
 
@@ -5575,6 +5697,94 @@ fn open_recent_from_menu(action: &OpenRecent, cx: &mut App) {
 fn recent_artifacts_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(PathBuf::from(home).join("Library/Application Support/ByteTrawl/recent-artifacts.json"))
+}
+
+fn ui_preferences_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join("Library/Application Support/ByteTrawl/ui-preferences.json"))
+}
+
+fn load_ui_preferences() -> UiPreferences {
+    ui_preferences_path()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn store_ui_preferences(preferences: &UiPreferences) -> std::io::Result<()> {
+    let Some(destination) = ui_preferences_path() else {
+        return Ok(());
+    };
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec_pretty(preferences).map_err(std::io::Error::other)?;
+    let temporary = destination.with_extension("json.tmp");
+    std::fs::write(&temporary, bytes)?;
+    std::fs::rename(temporary, destination)
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn visual_report_svg(root: &ArtifactNode, findings: &[Finding]) -> String {
+    let mut types = artifact_type_breakdown(root);
+    types.truncate(8);
+    let total = types.iter().map(|item| item.bytes).sum::<u64>().max(1);
+    let high = findings
+        .iter()
+        .filter(|finding| matches!(finding.severity, Severity::Critical | Severity::High))
+        .count();
+    let files = root.files().count();
+    let mut svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760"><rect width="1200" height="760" rx="32" fill="#0e0d0b"/><text x="64" y="76" fill="#9acf68" font-family="-apple-system, sans-serif" font-size="18" font-weight="700">BYTETRAWL VISUAL AUDIT</text><text x="64" y="122" fill="#d7d3c6" font-family="-apple-system, sans-serif" font-size="34" font-weight="700">{}</text><text x="64" y="154" fill="#978f7d" font-family="-apple-system, sans-serif" font-size="15">Static report · safe to share · generated locally</text>"##,
+        xml_escape(&root.name)
+    );
+    for (index, (label, value, detail, color)) in [
+        (
+            "SIZE",
+            format_size(root.size),
+            "Artifact bytes".to_string(),
+            "#9acf68",
+        ),
+        (
+            "FILES",
+            files.to_string(),
+            "Discovered members".to_string(),
+            "#6fa7c8",
+        ),
+        (
+            "FINDINGS",
+            findings.len().to_string(),
+            "Inspection results".to_string(),
+            "#d69b51",
+        ),
+        (
+            "HIGH RISK",
+            high.to_string(),
+            "Critical & high".to_string(),
+            "#d86d5f",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let x = 64 + index * 272;
+        svg.push_str(&format!(r##"<rect x="{x}" y="190" width="248" height="126" rx="14" fill="#141310" stroke="#25231e"/><text x="{}" y="222" fill="{color}" font-family="-apple-system, sans-serif" font-size="12" font-weight="700">{label}</text><text x="{}" y="266" fill="#d7d3c6" font-family="-apple-system, sans-serif" font-size="28" font-weight="700">{}</text><text x="{}" y="294" fill="#978f7d" font-family="-apple-system, sans-serif" font-size="13">{detail}</text>"##, x + 20, x + 20, xml_escape(&value), x + 20));
+    }
+    svg.push_str(r##"<text x="64" y="374" fill="#d7d3c6" font-family="-apple-system, sans-serif" font-size="20" font-weight="700">Composition</text>"##);
+    for (index, item) in types.iter().enumerate() {
+        let y = 410 + index * 38;
+        let width = ((item.bytes as f64 / total as f64) * 700.0).max(3.0);
+        svg.push_str(&format!(r##"<text x="64" y="{}" fill="#978f7d" font-family="-apple-system, sans-serif" font-size="13">{}</text><rect x="230" y="{}" width="700" height="16" rx="8" fill="#1c1b17"/><rect x="230" y="{}" width="{width:.1}" height="16" rx="8" fill="#{:06x}"/><text x="950" y="{}" fill="#d7d3c6" font-family="-apple-system, sans-serif" font-size="13">{}</text>"##, y, xml_escape(&item.label), y - 13, y - 13, item.color, y, format_size(item.bytes)));
+    }
+    svg.push_str(r##"<text x="64" y="724" fill="#978f7d" font-family="-apple-system, sans-serif" font-size="12">ByteTrawl · cross-platform software artifact security triage, comparison, and release audit</text></svg>"##);
+    svg
 }
 
 fn recent_artifacts() -> Vec<PathBuf> {
@@ -5643,6 +5853,7 @@ fn install_menus(cx: &mut App) {
                 MenuItem::action("Compare Folders…", CompareFolders),
                 MenuItem::separator(),
                 MenuItem::action("Save Workspace…", SaveWorkspace),
+                MenuItem::action("Export Visual Report…", ExportVisualReport),
             ],
         },
         Menu {
@@ -5664,6 +5875,12 @@ fn install_menus(cx: &mut App) {
                 MenuItem::separator(),
                 MenuItem::action("Toggle Artifact Tree", ToggleSidebar),
                 MenuItem::action("Toggle Inspector", ToggleInspector),
+                MenuItem::separator(),
+                MenuItem::action("Standard Layout", LayoutStandard),
+                MenuItem::action("Focus Layout", LayoutFocus),
+                MenuItem::action("Analysis Layout", LayoutAnalysis),
+                MenuItem::separator(),
+                MenuItem::action("Toggle High Contrast", ToggleHighContrast),
             ],
         },
         Menu {
@@ -5724,6 +5941,11 @@ fn main() {
         cx.on_action(save_workspace_from_menu);
         cx.on_action(toggle_sidebar);
         cx.on_action(toggle_inspector);
+        cx.on_action(layout_standard);
+        cx.on_action(layout_focus);
+        cx.on_action(layout_analysis);
+        cx.on_action(toggle_high_contrast);
+        cx.on_action(export_visual_report);
         cx.on_action(open_recent_from_menu);
         cx.bind_keys([
             KeyBinding::new("cmd-n", NewWindow, None),
@@ -5736,6 +5958,8 @@ fn main() {
             KeyBinding::new("cmd-f", FocusSearch, None),
             KeyBinding::new("cmd-shift-1", ToggleSidebar, None),
             KeyBinding::new("cmd-shift-2", ToggleInspector, None),
+            KeyBinding::new("cmd-shift-0", LayoutStandard, None),
+            KeyBinding::new("cmd-shift-f", LayoutFocus, None),
         ]);
         install_menus(cx);
         open_bytetrawl_window(cx);

@@ -74,7 +74,7 @@
     {
       "id": "tapa-valid-signed-app",
       "file": "Tapa_aarch64.app.tar.gz",
-      "type": "macos_app_stale_upstream_signature",
+      "type": "macos_app_valid_signature",
       "source": "https://github.com/aryrabelo/tapa",
       "license": "MIT",
       "url": "https://github.com/aryrabelo/tapa/releases/download/v0.2.3/Tapa_aarch64.app.tar.gz",
@@ -85,14 +85,15 @@
         "kind": "tar_gz",
         "path": "Tapa.app"
       },
-      "host_check": "macos_app_invalid_signature",
+      "host_check": "macos_app_valid_notarized",
       "assertions": [
         ".artifact.kind == \"application\"",
-        ".artifact_signature.status == \"Invalid\"",
+        ".artifact_signature.status == \"Valid\"",
         ".artifact_signature.identifier == \"com.aryrabelo.tapa\"",
-        ".artifact_signature.platform[\"Cryptographic Verification\"] == \"Failed\"",
+        ".artifact_signature.platform[\"Cryptographic Verification\"] == \"Passed\"",
+        "(.artifact_signature.platform[\"Gatekeeper / Notarization Assessment\"] | startswith(\"Accepted\"))",
         "([.files[] | select(.analysis.format == \"mach_o\")] | length) >= 2",
-        "([.findings[] | select(.title == \"Invalid code signature\")] | length) >= 1"
+        "([.findings[] | select(.title == \"Invalid code signature\")] | length) == 0"
       ]
     },
     {
@@ -125,39 +126,40 @@
     },
     {
       "id": "bytetrawl-valid-signed-app",
-      "file": "ByteTrawl-1.1.1-macos.zip",
-      "type": "macos_app_stale_release_signature",
+      "file": "ByteTrawl-1.1.7-macos.zip",
+      "type": "macos_app_valid_signature",
       "source": "https://github.com/everettjf/homebrew-tap",
       "license": "Apache-2.0",
-      "url": "https://github.com/everettjf/homebrew-tap/releases/download/bytetrawl-v1.1.1/ByteTrawl-1.1.1-macos.zip",
-      "bytes": 9417277,
-      "sha256": "9f8e8274c9334aec4ab52b025f3543aca1e115cdefc8cf2a049fcae4b0f33b5e",
+      "url": "https://github.com/everettjf/homebrew-tap/releases/download/bytetrawl-v1.1.7/ByteTrawl-1.1.7-macos.zip",
+      "bytes": 8960877,
+      "sha256": "ae7f5ccc9ef7753738b665dc986a900b43e720eb44a473405946ff7d673bf893",
       "depth": "deep",
       "prepare": {
         "kind": "zip",
         "path": "ByteTrawl.app"
       },
-      "host_check": "macos_app_invalid_signature",
+      "host_check": "macos_app_valid_notarized",
       "assertions": [
         ".artifact.kind == \"application\"",
-        ".artifact_signature.status == \"Invalid\"",
+        ".artifact_signature.status == \"Valid\"",
         ".artifact_signature.identifier == \"com.bytetrawl.app\"",
         ".artifact_signature.team_id == \"YPV49M8592\"",
-        ".artifact_signature.platform[\"Cryptographic Verification\"] == \"Failed\"",
+        ".artifact_signature.platform[\"Cryptographic Verification\"] == \"Passed\"",
+        "(.artifact_signature.platform[\"Gatekeeper / Notarization Assessment\"] | startswith(\"Accepted\"))",
         "([.files[] | select(.analysis.format == \"mach_o\")] | length) >= 1",
-        "([.findings[] | select(.title == \"Invalid code signature\")] | length) >= 1"
+        "([.findings[] | select(.title == \"Invalid code signature\")] | length) == 0"
       ]
     },
     {
       "id": "osquery-signed-pkg",
       "file": "osquery-5.23.1.pkg",
-      "type": "stale_signed_pkg_xar",
+      "type": "signed_pkg_xar",
       "source": "https://github.com/osquery/osquery",
       "license": "Apache-2.0",
       "url": "https://github.com/osquery/osquery/releases/download/5.23.1/osquery-5.23.1.pkg",
       "bytes": 25917400,
       "sha256": "9f40cea0358759ab2ee871c577055657e3cc2c7cbe5c1247f764245941178aa6",
-      "host_check": "none",
+      "host_check": "pkgutil_signed_notarized",
       "assertions": [
         ".artifact.kind == \"package\"",
         ".artifact.format == \"archive\"",

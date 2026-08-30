@@ -7,6 +7,8 @@
 
 ByteTrawl は Rust で実装された、クロスプラットフォームのソフトウェア成果物向け静的トリアージ・比較・リリース監査ワークベンチです。アプリ、ディレクトリ、パッケージ、単体ファイルを Artifact として統一的に扱い、対象を実行せずに構造、メタデータ、署名、依存関係、PE／Mach-O／ELF を検査します。
 
+最新のデスクトップ機能には、Size Lab とインタラクティブな treemap、Entropy Area Chart／ヒートマップから Hex への移動、依存関係マップ、署名／Provisioning タイムライン、IPA のアーキテクチャ／プライバシーマトリクス、Findings フィルター、保存可能なレイアウト、高コントラスト表示、ローカル SVG レポート出力があります。
+
 最新かつ詳細な項目別一覧は、正規版である英語の[サポートマトリクス](README.md#detailed-support-matrix)を参照してください。最新版は下記の Homebrew コマンド、または [GitHub Releases](https://github.com/everettjf/homebrew-tap/releases)から入手できます。
 
 ## スクリーンショット

@@ -105,6 +105,8 @@ ByteTrawl is being developed as a **safe static triage, comparison, and release-
 - `File → New Window` creates an independent inspection session; the native Window menu tracks open windows.
 - Drag a file, application, package, workspace, or directory into the center to open it.
 - Resizable Artifact Tree, inspector, and Details regions with virtualized tables for large inputs.
+- Three saved workbench presets: **Standard**, **Focus**, and **Analysis**. Sidebar/inspector visibility persists across launches, while each `File → New Window` session keeps independent artifact and navigation state.
+- Optional high-contrast appearance and a shareable **File → Export Visual Report…** SVG dashboard generated locally from the current artifact.
 - A compact **External Tools…** menu shows compatible installed integrations first, distinguishes GUI launchers from captured command-line tools, and summarizes unavailable integrations without filling the Details pane with disabled buttons.
 - Workspaces preserve the artifact path, selected view, bookmarks, notes, and cached analysis results.
 - **File → Open Release Policy…** applies the same versioned IPA, Android, Windows,
@@ -118,10 +120,10 @@ ByteTrawl is being developed as a **safe static triage, comparison, and release-
 - A host-independent `BinaryAnalyzer` interface dispatches to concrete `PeAnalyzer`, `MachOAnalyzer`, and `ElfAnalyzer` implementations. Unified PE, Mach-O, Universal Mach-O, and ELF results expose headers, sections, imports, exports, symbols, dependencies, signatures, metadata, entropy, and inspection findings without leaking parser-specific types into the UI.
 - Binary containers and ar libraries are parsed with `goblin`; PE embedded signatures with `authenticode`; Apple UDIF/DMG containers with `udif`; Apple XAR/flat PKG containers with `apple-xar`; tar streams with `tar`; XML with `quick-xml`; plists with `plist`; ZIP central directories with `zip`; file mapping with `memmap2`; and digests with the RustCrypto hash crates. ByteTrawl's own code focuses on the Artifact model, safe limits, normalization, orchestration, and UI.
 - Universal Mach-O slices are parsed independently and selectable from the **Slices** tab.
-- Artifact-wide dependencies are built lazily into a cancellable **Dependency Graph** list with source architecture, bundled/system/missing/unknown resolution, and resolved target paths.
+- Artifact-wide dependencies are built lazily into a cancellable **Dependency Graph** with a visual source-to-target map plus a precision table, source architecture, bundled/system/missing/unknown resolution, and resolved target paths.
 - Strings include ASCII, UTF-8, UTF-16LE, UTF-16BE, file offsets, section names, and virtual addresses where mapping information exists.
 - Hex inspection reads 4 KiB windows on demand and supports offset jumps, byte/text search, selection, and copy without loading the complete file into the UI.
-- Hashes plus whole-file and section entropy are explicit, cancellable, cached tasks. SHA-1 and MD5 are labeled as identification-only algorithms; opening an Artifact, global search, and dependency graph construction do not eagerly hash files or calculate entropy.
+- Hashes plus whole-file and section entropy are explicit, cancellable, cached tasks. A distributed 64 KiB entropy Area Chart and heatmap can jump directly into Hex at suspicious blocks. SHA-1 and MD5 are labeled as identification-only algorithms; opening an Artifact, global search, and dependency graph construction do not eagerly hash files or calculate entropy.
 - Mach-O parsing reports the embedded code-signature blob statically. Host cryptographic verification, entitlements, hardened-runtime details, and Gatekeeper/notarization assessment run in the background only when the Signature view is selected; each subprocess has a 30-second timeout and 4 MiB output limits.
 - ZIP inspection reads only the central directory and reports unsafe paths, symbolic links, expansion ratio, and suspicious expanded size. It does not extract entries.
 - DMG and ISO disk images are recognized from container structure rather than extension. Their volume, partition, and compression metadata are inspected statically without mounting or extraction.
@@ -181,15 +183,18 @@ ByteTrawl separates three levels of support: **audit** means platform-aware rele
 | Overview and Metadata | Kind, format, path, size, architecture, bitness, endian, entry point, image base, interpreter, parsed metadata, dependency/signature summaries and analysis errors |
 | Headers, Slices, Sections and Segments | Unified PE/Mach-O/ELF headers; Universal Mach-O slice selection; address/file layouts, flags and lazy section entropy |
 | Imports, Exports, Symbols and Relocations | Filterable, virtualized tables with names, addresses, libraries, relocation types, symbols and addends where the source format provides them |
-| Dependencies and Dependency Graph | Per-binary requested libraries plus artifact-wide edges; architecture and bundled/system/missing/unknown resolution with target paths |
+| Dependencies and Dependency Graph | Per-binary requested libraries plus artifact-wide visual source-to-target relationships and precision table; architecture and bundled/system/missing/unknown resolution with target paths |
+| Size Lab | Metric cards, file-type donut, largest-file bars and an interactive treemap; comparison mode adds size waterfall, type deltas, top growth, duplicate savings and diff treemap |
+| Entropy | Distributed 64 KiB samples rendered as an Area Chart and heatmap; click a block to open its exact offset in Hex |
 | Strings | ASCII, UTF-8, UTF-16LE and UTF-16BE; file offsets, encodings, section names and virtual addresses where mapping exists |
 | Hex | Read-only 4 KiB windows, offset jumps, byte/text search, selection and copy without loading the complete file |
-| Signature | Static embedded signature metadata; on macOS, opt-in bounded `codesign`/Gatekeeper verification, entitlements, signer, Team ID, timestamp, Hardened Runtime and notarization status |
-| Findings and Policy | Severity, rule/message and evidence across generic, IPA, Android, Windows and Linux analysis; shared profiles, rule controls, overrides and time-bounded suppressions in desktop and CLI |
+| Signature | Static embedded signature metadata; visual trust/provisioning timelines; on macOS, opt-in bounded `codesign`/Gatekeeper verification, entitlements, signer, Team ID, timestamp, Hardened Runtime and notarization status |
+| Findings and Policy | Severity aggregation and filters, rule/message and evidence navigation across generic, IPA, Android, Windows and Linux analysis; shared profiles, rule controls, overrides and time-bounded suppressions in desktop and CLI |
 | Compare | Exact SHA-256 content identity; added/removed/modified/moved files; directory and type growth; duplicates and largest growth; IPA identity, target, architecture, localization, privacy, signing, entitlement and finding changes |
 | Search | Artifact-wide search across names, metadata, symbols and strings, plus direct hexadecimal byte queries |
 | Workspaces | Artifact path, selected node/view, bookmarks, notes, tool configuration and cached analysis snapshot |
 | External tools | Explicit launch of compatible GUI tools; bounded, cancellable captured output for supported command-line tools; installed tools are prioritized |
+| Visual reports | Local, shareable SVG dashboard with artifact metrics, finding counts and file-type composition; no artifact bytes are uploaded |
 
 ### CLI, reports and CI
 
