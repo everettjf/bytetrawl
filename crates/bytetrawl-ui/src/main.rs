@@ -26,9 +26,13 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     Disableable, Root, Sizable, StyledExt, Theme, ThemeMode,
-    button::Button,
+    badge::Badge,
+    button::{Button, ButtonVariants as _},
     input::{Copy, Cut, Input, InputEvent, InputState, Paste, Redo, SelectAll, Undo},
     menu::{DropdownMenu as _, PopupMenuItem},
+    progress::Progress,
+    resizable::{h_resizable, resizable_panel},
+    tab::{Tab, TabBar},
 };
 use std::{
     path::PathBuf,
@@ -53,6 +57,8 @@ actions!(
         CompareArtifacts,
         CompareFolders,
         NewWindow,
+        ToggleSidebar,
+        ToggleInspector,
         SaveWorkspace,
         FocusSearch,
         Quit
@@ -244,6 +250,8 @@ struct ByteTrawlApp {
     task_generation: u64,
     status: SharedString,
     error: Option<SharedString>,
+    show_sidebar: bool,
+    show_inspector: bool,
 }
 
 impl ByteTrawlApp {
@@ -314,6 +322,8 @@ impl ByteTrawlApp {
             task_generation: 0,
             status: "Ready — static inspection only".into(),
             error: None,
+            show_sidebar: true,
+            show_inspector: true,
         }
     }
     fn choose(&mut self, folder: bool, cx: &mut Context<Self>) {
@@ -1359,9 +1369,8 @@ impl ByteTrawlApp {
         let row_count = rows.len();
         div()
             .id("artifact-tree-panel")
-            .w(px(300.))
+            .w_full()
             .h_full()
-            .flex_shrink_0()
             .bg(rgb(PANEL))
             .border_r_1()
             .border_color(rgb(BORDER))
@@ -1439,9 +1448,8 @@ impl ByteTrawlApp {
         if self.selected_node().is_none() {
             return div()
                 .id("details-empty")
-                .w(px(300.))
+                .w_full()
                 .h_full()
-                .flex_shrink_0()
                 .bg(rgb(PANEL))
                 .border_l_1()
                 .border_color(rgb(BORDER))
@@ -1543,9 +1551,8 @@ impl ByteTrawlApp {
             .unwrap_or_default();
         div()
             .id("details-scroll")
-            .w(px(300.))
+            .w_full()
             .h_full()
-            .flex_shrink_0()
             .bg(rgb(PANEL))
             .border_l_1()
             .border_color(rgb(BORDER))
@@ -1767,6 +1774,9 @@ impl ByteTrawlApp {
     }
     fn render_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tabs = self.tabs();
+        let selected_tab = tabs.iter().position(|tab| *tab == self.tab).unwrap_or(0);
+        let tab_view = cx.entity();
+        let tabs_for_click = tabs.clone();
         div()
             .flex_1()
             .h_full()
@@ -1789,28 +1799,56 @@ impl ByteTrawlApp {
                     .id("inspector-tabs-scroll")
                     .h(px(40.))
                     .flex()
-                    .items_end()
-                    .px_4()
-                    .gap_1()
+                    .items_center()
+                    .px_3()
                     .bg(rgb(PANEL))
                     .border_b_1()
                     .border_color(rgb(BORDER))
                     .overflow_x_scroll()
-                    .children(tabs.into_iter().map(|tab| {
-                        let active = self.tab == tab;
-                        div()
-                            .id(SharedString::from(format!("tab-{}", tab.label())))
-                            .px_3()
-                            .h(px(39.))
-                            .flex()
-                            .items_center()
-                            .cursor_pointer()
-                            .text_sm()
-                            .text_color(rgb(if active { TEXT } else { MUTED }))
-                            .when(active, |d| d.border_b_2().border_color(rgb(ACCENT)))
-                            .on_click(cx.listener(move |this, _, _, cx| this.set_tab(tab, cx)))
-                            .child(tab.label())
-                    })),
+                    .child(
+                        TabBar::new("inspector-tabs")
+                            .underline()
+                            .menu(true)
+                            .small()
+                            .selected_index(selected_tab)
+                            .children(tabs.iter().map(|tab| {
+                                let finding_count = match tab {
+                                    InspectorTab::Findings => self
+                                        .current_analysis()
+                                        .map(|analysis| analysis.findings.len())
+                                        .unwrap_or(0),
+                                    InspectorTab::IpaFindings => self
+                                        .ipa_report
+                                        .as_ref()
+                                        .map(|report| report.findings.len())
+                                        .unwrap_or(0),
+                                    InspectorTab::AndroidFindings => self
+                                        .android_report
+                                        .as_ref()
+                                        .map(|report| report.findings.len())
+                                        .unwrap_or(0),
+                                    InspectorTab::WindowsFindings => self
+                                        .windows_report
+                                        .as_ref()
+                                        .map(|report| report.findings.len())
+                                        .unwrap_or(0),
+                                    InspectorTab::LinuxFindings => self
+                                        .linux_report
+                                        .as_ref()
+                                        .map(|report| report.findings.len())
+                                        .unwrap_or(0),
+                                    _ => 0,
+                                };
+                                Tab::new().label(tab.label()).suffix(
+                                    Badge::new().count(finding_count).color(rgb(DESTRUCTIVE)),
+                                )
+                            }))
+                            .on_click(move |index, _, cx| {
+                                if let Some(tab) = tabs_for_click.get(*index).copied() {
+                                    tab_view.update(cx, |this, cx| this.set_tab(tab, cx));
+                                }
+                            }),
+                    ),
             )
             .child(
                 div()
@@ -3543,8 +3581,10 @@ impl Render for ByteTrawlApp {
                             .child(
                                 Button::new("search-all")
                                     .label("Search Artifact")
+                                    .primary()
                                     .xsmall()
                                     .compact()
+                                    .tooltip("Search the entire artifact (Return)")
                                     .on_click(cx.listener(|this, _, _, cx| this.search_all(cx))),
                             )
                             .child(
@@ -3556,6 +3596,7 @@ impl Render for ByteTrawlApp {
                                     })
                                     .xsmall()
                                     .compact()
+                                    .tooltip("Interpret the query as text")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.file_search_mode = FileSearchMode::Text;
                                         cx.notify();
@@ -3570,6 +3611,7 @@ impl Render for ByteTrawlApp {
                                     })
                                     .xsmall()
                                     .compact()
+                                    .tooltip("Interpret the query as hexadecimal bytes")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.file_search_mode = FileSearchMode::Bytes;
                                         cx.notify();
@@ -3580,6 +3622,8 @@ impl Render for ByteTrawlApp {
                                     .label("Find Next")
                                     .xsmall()
                                     .compact()
+                                    .ghost()
+                                    .tooltip("Select the next search result")
                                     .on_click(cx.listener(|this, _, _, cx| this.find_next(cx))),
                             )
                             .child(
@@ -3587,6 +3631,8 @@ impl Render for ByteTrawlApp {
                                     .label("Jump Offset")
                                     .xsmall()
                                     .compact()
+                                    .ghost()
+                                    .tooltip("Jump to a hexadecimal file offset")
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.jump_to_offset(cx)),
                                     ),
@@ -3596,6 +3642,8 @@ impl Render for ByteTrawlApp {
                                     .label("Copy Hex")
                                     .xsmall()
                                     .compact()
+                                    .ghost()
+                                    .tooltip("Copy the visible hexadecimal chunk")
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.copy_hex_chunk(cx)),
                                     ),
@@ -3605,9 +3653,11 @@ impl Render for ByteTrawlApp {
                                     .child(
                                         div()
                                             .ml_1()
-                                            .text_xs()
-                                            .text_color(rgb(ACCENT))
-                                            .child("● Analyzing"),
+                                            .w(px(92.))
+                                            .child(Progress::new().value(62.).bg(rgb(GREEN))),
+                                    )
+                                    .child(
+                                        div().text_xs().text_color(rgb(ACCENT)).child("Analyzing…"),
                                     )
                                     .child(
                                         Button::new("cancel-task")
@@ -3622,13 +3672,26 @@ impl Render for ByteTrawlApp {
                     ),
             )
             .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .child(self.render_sidebar(cx))
-                    .child(self.render_main(cx))
-                    .child(self.render_details(cx)),
+                h_resizable("workspace-panels")
+                    .child(
+                        resizable_panel()
+                            .visible(self.show_sidebar)
+                            .size(px(280.))
+                            .size_range(px(180.)..px(520.))
+                            .child(self.render_sidebar(cx)),
+                    )
+                    .child(
+                        resizable_panel()
+                            .size_range(px(420.)..Pixels::MAX)
+                            .child(self.render_main(cx)),
+                    )
+                    .child(
+                        resizable_panel()
+                            .visible(self.show_inspector)
+                            .size(px(320.))
+                            .size_range(px(240.)..px(560.))
+                            .child(self.render_details(cx)),
+                    ),
             )
             .child(
                 div()
@@ -4020,8 +4083,17 @@ fn configure_component_theme(cx: &mut App) {
     theme.scrollbar = background;
     theme.scrollbar_thumb = border;
     theme.scrollbar_thumb_hover = muted;
-    theme.radius = px(2.4);
-    theme.radius_lg = px(3.2);
+    theme.radius = px(7.);
+    theme.radius_lg = px(11.);
+    theme.progress_bar = primary;
+    theme.success = primary;
+    theme.warning = rgb(WARNING).into();
+    theme.info = rgb(ACCENT).into();
+    theme.chart_1 = primary;
+    theme.chart_2 = rgb(ACCENT).into();
+    theme.chart_3 = rgb(HIGH).into();
+    theme.chart_4 = rgb(0x6fa7c8).into();
+    theme.chart_5 = rgb(0xb58ad6).into();
 }
 
 fn quit(_: &Quit, cx: &mut App) {
@@ -4072,6 +4144,24 @@ fn compare_folders_from_menu(_: &CompareFolders, cx: &mut App) {
 fn save_workspace_from_menu(_: &SaveWorkspace, cx: &mut App) {
     if let Some(view) = active_bytetrawl_view(cx) {
         view.update(cx, |this, cx| this.save_workspace(cx));
+    }
+}
+
+fn toggle_sidebar(_: &ToggleSidebar, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| {
+            this.show_sidebar = !this.show_sidebar;
+            cx.notify();
+        });
+    }
+}
+
+fn toggle_inspector(_: &ToggleInspector, cx: &mut App) {
+    if let Some(view) = active_bytetrawl_view(cx) {
+        view.update(cx, |this, cx| {
+            this.show_inspector = !this.show_inspector;
+            cx.notify();
+        });
     }
 }
 
@@ -4176,7 +4266,12 @@ fn install_menus(cx: &mut App) {
         },
         Menu {
             name: "View".into(),
-            items: vec![MenuItem::action("Focus Search", FocusSearch)],
+            items: vec![
+                MenuItem::action("Focus Search", FocusSearch),
+                MenuItem::separator(),
+                MenuItem::action("Toggle Artifact Tree", ToggleSidebar),
+                MenuItem::action("Toggle Inspector", ToggleInspector),
+            ],
         },
         Menu {
             name: "Window".into(),
@@ -4234,6 +4329,8 @@ fn main() {
         cx.on_action(compare_artifacts_from_menu);
         cx.on_action(compare_folders_from_menu);
         cx.on_action(save_workspace_from_menu);
+        cx.on_action(toggle_sidebar);
+        cx.on_action(toggle_inspector);
         cx.on_action(open_recent_from_menu);
         cx.bind_keys([
             KeyBinding::new("cmd-n", NewWindow, None),
@@ -4244,6 +4341,8 @@ fn main() {
             KeyBinding::new("cmd-shift-c", CompareArtifacts, None),
             KeyBinding::new("cmd-s", SaveWorkspace, None),
             KeyBinding::new("cmd-f", FocusSearch, None),
+            KeyBinding::new("cmd-shift-1", ToggleSidebar, None),
+            KeyBinding::new("cmd-shift-2", ToggleInspector, None),
         ]);
         install_menus(cx);
         open_bytetrawl_window(cx);
