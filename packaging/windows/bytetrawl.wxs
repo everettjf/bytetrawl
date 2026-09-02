@@ -14,7 +14,14 @@
       <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLFOLDER" Name="ByteTrawl">
           <Component Id="ApplicationFiles" Guid="A722DC09-998D-423E-B480-8E1C8B80BEBB" Win64="yes">
-            <File Id="ByteTrawlExe" Source="$(var.SourceDir)\ByteTrawl.exe" KeyPath="yes" />
+            <File Id="ByteTrawlExe" Source="$(var.SourceDir)\ByteTrawl.exe" KeyPath="yes">
+              <Shortcut Id="ByteTrawlStartMenuShortcut"
+                        Directory="ApplicationProgramsFolder"
+                        Name="ByteTrawl"
+                        Description="Application and binary inspection workbench"
+                        Advertise="yes"
+                        WorkingDirectory="INSTALLFOLDER" />
+            </File>
             <File Id="ByteTrawlCliExe" Source="$(var.SourceDir)\bytetrawl-cli.exe" />
             <File Id="LicenseFile" Source="$(var.SourceDir)\LICENSE" />
             <File Id="ReadmeFile" Source="$(var.SourceDir)\README.md" />
@@ -22,23 +29,12 @@
         </Directory>
       </Directory>
       <Directory Id="ProgramMenuFolder">
-        <Directory Id="ApplicationProgramsFolder" Name="ByteTrawl">
-          <Component Id="ApplicationShortcut" Guid="65852B54-C5D3-4A7E-93BF-D96F1A24A006">
-            <Shortcut Id="ByteTrawlStartMenuShortcut"
-                      Name="ByteTrawl"
-                      Description="Application and binary inspection workbench"
-                      Target="[#ByteTrawlExe]"
-                      WorkingDirectory="INSTALLFOLDER" />
-            <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
-            <RegistryValue Root="HKLM" Key="Software\ByteTrawl" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
-          </Component>
-        </Directory>
+        <Directory Id="ApplicationProgramsFolder" Name="ByteTrawl" />
       </Directory>
     </Directory>
 
     <Feature Id="ProductFeature" Title="ByteTrawl" Level="1">
       <ComponentRef Id="ApplicationFiles" />
-      <ComponentRef Id="ApplicationShortcut" />
     </Feature>
   </Product>
 </Wix>
