@@ -1,0 +1,10 @@
+Source: bytetrawl
+Section: utils
+Priority: optional
+Maintainer: ByteTrawl contributors
+Standards-Version: 4.7.0
+
+Package: bytetrawl
+Architecture: any
+Depends: ${shlibs:Depends}
+Description: Cross-platform application and binary inspection workbench

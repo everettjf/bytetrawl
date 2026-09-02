@@ -27,12 +27,16 @@ install -m 644 packaging/linux/bytetrawl.desktop \
 install -m 644 packaging/macos/ByteTrawlIcon.png \
   "$package_root/usr/share/icons/hicolor/512x512/apps/bytetrawl.png"
 
-dependencies=$(dpkg-shlibdeps \
+mkdir -p "$package_root/debian"
+install -m 644 packaging/linux/debian-control \
+  "$package_root/debian/control"
+dependency_output=$(cd "$package_root" && dpkg-shlibdeps \
   -O \
-  -e"$package_root/usr/bin/bytetrawl" \
-  -e"$package_root/usr/bin/bytetrawl-cli" \
-  2>/dev/null | sed -n 's/^shlibs:Depends=//p')
+  -e"usr/bin/bytetrawl" \
+  -e"usr/bin/bytetrawl-cli")
+dependencies=$(printf '%s\n' "$dependency_output" | sed -n 's/^shlibs:Depends=//p')
 test -n "$dependencies"
+rm -rf "$package_root/debian"
 
 sed \
   -e "s/@VERSION@/$version/g" \
