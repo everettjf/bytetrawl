@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ByteTrawl
+Comment=Inspect application packages and binary files
+Exec=bytetrawl %F
+Icon=bytetrawl
+Terminal=false
+Categories=Development;Utility;
+MimeType=application/octet-stream;
+StartupNotify=true

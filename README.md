@@ -41,7 +41,9 @@ Every distributed macOS build must pass the complete release trust chain: Develo
 - macOS 13 Ventura or later
 - Homebrew for the installation commands above
 
-The current release target is macOS. The core does not depend on GPUI and can statically inspect Windows PE and Linux ELF binaries on macOS; host-specific Windows and Linux packaging and UI validation will follow separately.
+Native Windows x64 and Linux amd64 packages are built by GitHub Actions. A tagged release publishes a Windows MSI and portable ZIP, plus a Debian package and portable Linux tarball. These packages currently are not code-signed; verify the accompanying `SHA256SUMS` before installing. The core remains host-independent and can inspect Windows PE and Linux ELF binaries on every supported host.
+
+To produce the packages without publishing a release, run the **Package Windows and Linux** workflow manually. Creating a `v*` tag also uploads the verified artifacts to GitHub Releases.
 
 The UI ships with a warm terminal-style dark theme derived from the semantic palette used by [xnu.app](https://xnu.app): warm near-black surfaces, paper-colored text, terminal green primary actions, and amber accents. Theme colors live in one semantic token module instead of individual views.
 
