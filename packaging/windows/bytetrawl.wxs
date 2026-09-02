@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="ByteTrawl"
+           Language="1033"
+           Version="$(var.ProductVersion)"
+           Manufacturer="ByteTrawl contributors"
+           UpgradeCode="F37F73E8-B728-4AB7-A68A-1E2DF4AF7427">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of ByteTrawl is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="ByteTrawl">
+          <Component Id="ApplicationFiles" Guid="A722DC09-998D-423E-B480-8E1C8B80BEBB" Win64="yes">
+            <File Id="ByteTrawlExe" Source="$(var.SourceDir)\ByteTrawl.exe" KeyPath="yes">
+              <Shortcut Id="ByteTrawlStartMenuShortcut"
+                        Directory="ApplicationProgramsFolder"
+                        Name="ByteTrawl"
+                        Description="Application and binary inspection workbench"
+                        Advertise="yes"
+                        WorkingDirectory="INSTALLFOLDER" />
+            </File>
+            <File Id="ByteTrawlCliExe" Source="$(var.SourceDir)\bytetrawl-cli.exe" />
+            <File Id="LicenseFile" Source="$(var.SourceDir)\LICENSE" />
+            <File Id="ReadmeFile" Source="$(var.SourceDir)\README.md" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="ByteTrawl">
+          <Component Id="ApplicationProgramsFolderCleanup" Guid="646F07CB-4151-469D-A5C9-7D37089DA9A4">
+            <CreateFolder />
+            <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+            <RegistryValue Root="HKCU"
+                           Key="Software\ByteTrawl"
+                           Name="StartMenuFolder"
+                           Type="integer"
+                           Value="1"
+                           KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="ProductFeature" Title="ByteTrawl" Level="1">
+      <ComponentRef Id="ApplicationFiles" />
+      <ComponentRef Id="ApplicationProgramsFolderCleanup" />
+    </Feature>
+  </Product>
+</Wix>

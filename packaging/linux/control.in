@@ -1,0 +1,11 @@
+Package: bytetrawl
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: ByteTrawl contributors
+Depends: @DEPENDS@
+Section: utils
+Priority: optional
+Homepage: https://github.com/everettjf/bytetrawl
+Description: Cross-platform application and binary inspection workbench
+ ByteTrawl provides a graphical workbench and command-line interface for
+ statically inspecting application packages, directories, and binary files.

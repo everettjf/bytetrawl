@@ -76,7 +76,7 @@ bytetrawl-cli inspect ./package --hash sha256 --strings --entropy
 cargo run -p bytetrawl
 ```
 
-核心分析层不依赖 GPUI，可在 macOS 上静态检查 Windows PE 和 Linux ELF。Windows 与 Linux 原生打包和 UI 验证尚在规划中。
+GitHub Actions 可原生构建 Windows x64 与 Linux amd64 安装包：Windows 提供 MSI 和便携 ZIP，Linux 提供 DEB 和便携 tar.gz。手动运行 **Package Windows and Linux** 工作流只生成 Actions 构件；推送 `v*` 标签还会把经过检查的构件与 `SHA256SUMS` 发布到 GitHub Releases。目前这些包尚未进行代码签名，安装前请核对校验和。核心分析层不依赖 GPUI，可在所有支持的宿主上静态检查 Windows PE 和 Linux ELF。
 
 ## 安全边界
 
