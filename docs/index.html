@@ -29,21 +29,21 @@
       <a href="#safety">Safety</a>
       <a href="#quality">Quality</a>
       <a href="#install">Install</a>
-      <a class="nav-release" href="https://github.com/everettjf/homebrew-tap/releases">Releases ↗</a>
+      <a class="nav-release" href="https://github.com/everettjf/bytetrawl/releases/latest">Downloads ↗</a>
     </nav>
   </header>
 
   <main id="top">
     <section class="hero shell">
       <div class="hero-copy">
-        <p class="eyebrow"><span class="live-dot"></span> Available for macOS 13+</p>
+        <p class="eyebrow"><span class="live-dot"></span> Available for macOS, Windows &amp; Linux</p>
         <h1>Know what’s<br><em>inside.</em></h1>
         <p class="lede">A native workbench for safe static triage, release comparison, and platform-aware auditing across applications, packages, archives, disk images, and binaries.</p>
         <div class="actions">
-          <a class="button primary" href="#install">Install with Homebrew</a>
-          <a class="button" href="https://github.com/everettjf/homebrew-tap/releases">View releases ↗</a>
+          <a class="button primary" href="#install">Download ByteTrawl</a>
+          <a class="button" href="https://github.com/everettjf/bytetrawl/releases/tag/v1.1.12">View v1.1.12 ↗</a>
         </div>
-        <p class="micro">Apple silicon · Signed &amp; notarized · Apache-2.0</p>
+        <p class="micro">macOS Apple silicon · Windows x64 · Linux amd64 · Apache-2.0</p>
       </div>
 
       <div class="inspector carousel" id="gallery" aria-label="ByteTrawl screenshots" aria-roledescription="carousel">
@@ -111,7 +111,7 @@
         </div>
       </div>
 
-      <aside class="boundaries"><b>Deliberate boundary</b><p>ByteTrawl is static and read-only. It does not execute imported software, mount images, install packages, automatically extract archives, decompile, debug, patch bytes, or present heuristic findings as malware verdicts. The distributed desktop app currently targets Apple-silicon macOS 13+.</p></aside>
+      <aside class="boundaries"><b>Deliberate boundary</b><p>ByteTrawl is static and read-only. It does not execute imported software, mount images, install packages, automatically extract archives, decompile, debug, patch bytes, or present heuristic findings as malware verdicts. Desktop builds are available for Apple-silicon macOS 13+, Windows x64, and Linux amd64.</p></aside>
     </section>
 
     <section class="section shell" id="inspect">
@@ -143,17 +143,34 @@
         <article><strong>1.88</strong><b>verified Rust MSRV</b><p>The declared minimum toolchain is compiled in CI alongside stable tests, Clippy, CLI contracts, and app launch checks.</p></article>
         <article><strong>3×</strong><b>macOS trust verification</b><p>Strict code-signature verification, stapled-ticket validation, and Gatekeeper assessment run on the final archived app and again after Homebrew installation.</p></article>
       </div>
-      <div class="quality-links"><a href="testing.md">Testing matrix ↗</a><a href="https://github.com/everettjf/homebrew-tap/releases">Signed releases ↗</a></div>
+      <div class="quality-links"><a href="testing.md">Testing matrix ↗</a><a href="https://github.com/everettjf/bytetrawl/releases/latest">All downloads ↗</a></div>
     </section>
 
     <section class="section install shell" id="install">
-      <div class="install-copy"><p class="eyebrow">GET BYTE TRAWL</p><h2>Two tools.<br>One tap.</h2><p>Install the native workbench, the automation-friendly CLI, or both. Built for Apple silicon Macs running macOS 13 or later.</p></div>
-      <div class="terminal">
-        <div class="terminal-head"><span>Terminal</span><button type="button" data-copy aria-label="Copy installation commands">Copy</button></div>
-        <pre><code><span>$</span> brew tap everettjf/tap
+      <div class="install-copy"><p class="eyebrow">GET BYTE TRAWL · v1.1.12</p><h2>Choose your<br>platform.</h2><p>Install the native workbench or use a portable archive. Windows and Linux packages are built and verified by GitHub Actions.</p></div>
+      <div class="downloads" aria-label="ByteTrawl downloads">
+        <article class="download-platform">
+          <div><span>WINDOWS · X64</span><h3>Windows</h3><p>Use the installer for a standard setup, or unzip the portable build and run it directly.</p></div>
+          <div class="download-actions">
+            <a class="button primary" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.12/ByteTrawl-1.1.12-windows-x64.msi">Download MSI</a>
+            <a class="button" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.12/ByteTrawl-1.1.12-windows-x64.zip">Portable ZIP</a>
+          </div>
+        </article>
+        <article class="download-platform">
+          <div><span>LINUX · AMD64</span><h3>Linux</h3><p>Install the Debian package, or extract the portable tarball on another compatible distribution.</p></div>
+          <div class="download-actions">
+            <a class="button primary" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.12/ByteTrawl-1.1.12-linux-amd64.deb">Download DEB</a>
+            <a class="button" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.12/ByteTrawl-1.1.12-linux-amd64.tar.gz">Portable tar.gz</a>
+          </div>
+        </article>
+        <div class="terminal">
+          <div class="terminal-head"><span>macOS · Apple silicon · 13+</span><button type="button" data-copy aria-label="Copy installation commands">Copy</button></div>
+          <pre><code><span>$</span> brew tap everettjf/tap
 <span>$</span> brew install --cask bytetrawl
 <span>$</span> brew install bytetrawl-cli</code></pre>
-        <p><b>Verified:</b> Distributed releases are Developer ID signed, Apple-notarized, and include a stapled ticket for offline Gatekeeper verification.</p>
+          <p><b>Verified:</b> Distributed releases are Developer ID signed, Apple-notarized, and include a stapled ticket for offline Gatekeeper verification.</p>
+        </div>
+        <p class="checksum-link"><a href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.12/SHA256SUMS">Verify downloads with SHA256SUMS ↗</a></p>
       </div>
     </section>
   </main>
