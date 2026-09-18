@@ -434,7 +434,10 @@ pub fn inspect(
             if want_entropy
                 && !matches!(
                     node.source,
-                    Some(bytetrawl_core::ArtifactSource::ArchiveMember { .. })
+                    Some(
+                        bytetrawl_core::ArtifactSource::ArchiveMember { .. }
+                            | bytetrawl_core::ArtifactSource::ContainerFile { .. }
+                    )
                 )
                 && let Err(error) = enrich_analysis_entropy(&node.path, analysis, cancellation)
             {

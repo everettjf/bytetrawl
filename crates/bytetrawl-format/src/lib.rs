@@ -32,6 +32,75 @@ fn has_pe_header(bytes: &[u8]) -> bool {
         .is_some_and(|signature| signature == b"PE\0\0")
 }
 
+/// Detects an Electron ASAR archive. The header is a Chromium Pickle whose single
+/// string field is a JSON object beginning with `{"files"`. Modern (Electron 12+)
+/// headers place that JSON at offset 16; the legacy pre-12 layout places it at
+/// offset 12.
+fn detect_asar(bytes: &[u8]) -> bool {
+    if bytes.len() < 24 {
+        return false;
+    }
+    let json_at_16 = bytes.get(16..24) == Some(b"{\"files\"");
+    let json_at_12 = bytes.get(12..20) == Some(b"{\"files\"");
+    (json_at_16 && bytes[0..4] == [4, 0, 0, 0]) || json_at_12
+}
+
+/// Detects a Chromium `.pak` data pack. Version 4 stores the encoding byte at
+/// offset 8; version 5 stores it at offset 4 (followed by three padding bytes).
+fn detect_pak(bytes: &[u8]) -> bool {
+    if bytes.len() < 4 {
+        return false;
+    }
+    match u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) {
+        4 => bytes.len() >= 9 && bytes[8] <= 2,
+        5 => bytes.len() >= 12 && bytes[4] <= 2,
+        _ => false,
+    }
+}
+
+/// Detects an SFNT-based font: TrueType, OpenType/CFF, WOFF or WOFF2.
+fn detect_font(bytes: &[u8]) -> bool {
+    if bytes.len() < 4 {
+        return false;
+    }
+    bytes.starts_with(b"\0\x01\0\0")
+        || bytes.starts_with(b"OTTO")
+        || bytes.starts_with(b"true")
+        || bytes.starts_with(b"ttcf")
+        || bytes.starts_with(b"wOFF")
+        || bytes.starts_with(b"wOF2")
+}
+
+/// Detects an MP3 audio stream via an ID3v2 tag or an MPEG audio frame sync.
+fn detect_mp3(bytes: &[u8]) -> bool {
+    if bytes.starts_with(b"ID3") {
+        return true;
+    }
+    // MPEG audio frame sync: 11 set bits, followed by a valid MPEG version id.
+    bytes.len() >= 2 && bytes[0] == 0xff && (bytes[1] & 0xe0) == 0xe0
+}
+
+/// Detects a CPython bytecode (`.pyc`) marshalled header. CPython magic numbers
+/// terminate with the two bytes `0x0d 0x0a`.
+fn detect_python_bytecode(bytes: &[u8]) -> bool {
+    bytes.len() >= 4 && bytes[2] == 0x0d && bytes[3] == 0x0a
+}
+
+/// Detects a Qt compiled resource (`.rcc`) or Qt message catalog (`.qm`).
+fn detect_qt_resource(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"qres")
+        || bytes.starts_with(b"\x3c\xb8\x64\x18")
+        || bytes.starts_with(b"\x3c\xb8\x64\x18\xca\xef\x9c\x95\xcd\x21\x1c\xbf\x60\xa1\xbd\xdd")
+}
+
+/// Detects a GPU texture container: KTX1/KTX2, DirectDraw Surface or OpenEXR.
+fn detect_texture(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\xabKTX 11")
+        || bytes.starts_with(b"\xabKTX 20")
+        || bytes.starts_with(b"DDS ")
+        || bytes.starts_with(b"\x76\x2f\x31\x01")
+}
+
 impl BinaryAnalyzer for PeAnalyzer {
     fn detect(&self, input: &AnalysisInput<'_>) -> bool {
         has_pe_header(input.bytes)
@@ -124,6 +193,9 @@ pub fn detect_format(bytes: &[u8]) -> FileFormat {
         || bytes.starts_with(b"7z\xbc\xaf\x27\x1c")
         || bytes.starts_with(b"Rar!\x1a\x07")
         || bytes.starts_with(b"\x1f\x8b")
+        || bytes.starts_with(b"BZh")
+        || bytes.starts_with(b"\xfd7zXZ\0")
+        || bytes.starts_with(b"\x28\xb5\x2f\xfd")
         || bytes.get(257..262).is_some_and(|magic| magic == b"ustar")
     {
         return FileFormat::Archive;
@@ -136,6 +208,51 @@ pub fn detect_format(bytes: &[u8]) -> FileFormat {
     }
     if bytes.starts_with(b"bplist00") {
         return FileFormat::Plist;
+    }
+    if bytes.starts_with(b"BOMStore") {
+        return FileFormat::AssetCatalog;
+    }
+    if bytes.starts_with(b"icns") {
+        return FileFormat::Icns;
+    }
+    if bytes.starts_with(b"\0asm") {
+        return FileFormat::Wasm;
+    }
+    if detect_asar(bytes) {
+        return FileFormat::Asar;
+    }
+    if detect_pak(bytes) {
+        return FileFormat::Pak;
+    }
+    if detect_font(bytes) {
+        return FileFormat::Font;
+    }
+    if bytes.starts_with(b"%PDF-") {
+        return FileFormat::Pdf;
+    }
+    if bytes.get(4..8) == Some(b"ftyp") {
+        return FileFormat::Mp4;
+    }
+    if detect_mp3(bytes) {
+        return FileFormat::Mp3;
+    }
+    if detect_python_bytecode(bytes) {
+        return FileFormat::PythonBytecode;
+    }
+    if bytes.starts_with(b"\xde\x12\x04\x95") || bytes.starts_with(b"\x95\x04\x12\xde") {
+        return FileFormat::Gettext;
+    }
+    if detect_qt_resource(bytes) {
+        return FileFormat::QtResource;
+    }
+    if detect_texture(bytes) {
+        return FileFormat::Texture;
+    }
+    if bytes.starts_with(b"MTLB") {
+        return FileFormat::Metallib;
+    }
+    if bytes.starts_with(b"\xe2\x9c\xa8\x0e") || bytes.starts_with(b"\xe2\x9c\xa8\x07") {
+        return FileFormat::SwiftModule;
     }
     if imagesize::image_type(bytes).is_ok() {
         return FileFormat::Image;
@@ -1584,5 +1701,84 @@ mod tests {
                 .keys()
                 .any(|key| key.starts_with("Load Command "))
         );
+    }
+
+    #[test]
+    fn detects_new_container_and_resource_formats() {
+        assert_eq!(
+            detect_format(b"BOMStore\x00\x00\x00\x01rest"),
+            FileFormat::AssetCatalog
+        );
+        assert_eq!(detect_format(b"icns\x00\x00\x01\x00rest"), FileFormat::Icns);
+        assert_eq!(
+            detect_format(b"\0asm\x01\x00\x00\x00rest"),
+            FileFormat::Wasm
+        );
+
+        // Modern ASAR header: [u32=4][u32 pickle_len][u32 payload_len][u32 string_len][{"files"...]
+        let mut asar = vec![0u8; 32];
+        asar[0..4].copy_from_slice(&4u32.to_le_bytes());
+        asar[4..8].copy_from_slice(&24u32.to_le_bytes());
+        asar[8..12].copy_from_slice(&20u32.to_le_bytes());
+        asar[12..16].copy_from_slice(&16u32.to_le_bytes());
+        asar[16..24].copy_from_slice(b"{\"files\"");
+        assert_eq!(detect_format(&asar), FileFormat::Asar);
+
+        // Chromium PAK v5: [u32=5][u8 encoding][3 pad][u16 resource_count][u16 alias_count]
+        let mut pak = vec![0u8; 12];
+        pak[0..4].copy_from_slice(&5u32.to_le_bytes());
+        pak[4] = 1;
+        assert_eq!(detect_format(&pak), FileFormat::Pak);
+        // PAK v4 keeps the encoding byte at offset 8.
+        let mut pak4 = vec![0u8; 9];
+        pak4[0..4].copy_from_slice(&4u32.to_le_bytes());
+        pak4[8] = 0;
+        assert_eq!(detect_format(&pak4), FileFormat::Pak);
+    }
+
+    #[test]
+    fn detects_font_pdf_media_and_asset_formats() {
+        assert_eq!(detect_format(b"\0\x01\0\0\x00\x0aread"), FileFormat::Font);
+        assert_eq!(detect_format(b"OTTO\x00\x00\x00\x00"), FileFormat::Font);
+        assert_eq!(detect_format(b"wOFF\x00\x01\x00\x00"), FileFormat::Font);
+        assert_eq!(detect_format(b"wOF2\x00\x01\x00\x00"), FileFormat::Font);
+        assert_eq!(detect_format(b"%PDF-1.7\n...."), FileFormat::Pdf);
+        assert_eq!(detect_format(b"\0\0\0\x18ftypisom"), FileFormat::Mp4);
+        assert_eq!(
+            detect_format(b"ID3\x04\x00\x00\x00\x00\x00\x00"),
+            FileFormat::Mp3
+        );
+        assert_eq!(detect_format(b"\xff\xfb\x90\x64"), FileFormat::Mp3);
+        // CPython magic terminates with 0x0d 0x0a.
+        assert_eq!(
+            detect_format(b"\xf3\x0d\x0d\x0a\x00\x00\x00\x00"),
+            FileFormat::PythonBytecode
+        );
+        assert_eq!(detect_format(b"\xde\x12\x04\x95rest"), FileFormat::Gettext);
+        assert_eq!(
+            detect_format(b"qres\x00\x00\x00\x03"),
+            FileFormat::QtResource
+        );
+        assert_eq!(
+            detect_format(b"\x3c\xb8\x64\x18rest"),
+            FileFormat::QtResource
+        );
+        assert_eq!(
+            detect_format(b"\xabKTX 11\xbb\r\n\x1a\nrest"),
+            FileFormat::Texture
+        );
+        assert_eq!(detect_format(b"DDS \x7c\x00\x00\x00"), FileFormat::Texture);
+        assert_eq!(
+            detect_format(b"\x76\x2f\x31\x01\x02\x00\x00\x00"),
+            FileFormat::Texture
+        );
+        assert_eq!(detect_format(b"MTLB\x01\x80\x02\x00"), FileFormat::Metallib);
+        assert_eq!(
+            detect_format(b"\xe2\x9c\xa8\x0erest"),
+            FileFormat::SwiftModule
+        );
+        assert_eq!(detect_format(b"BZhrest"), FileFormat::Archive);
+        assert_eq!(detect_format(b"\xfd7zXZ\0rest"), FileFormat::Archive);
+        assert_eq!(detect_format(b"\x28\xb5\x2f\xfdrest"), FileFormat::Archive);
     }
 }

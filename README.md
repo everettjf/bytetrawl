@@ -166,6 +166,21 @@ ByteTrawl separates three levels of support: **audit** means platform-aware rele
 |---|---|---|
 | Mach-O and Universal/Fat Mach-O | Inspect | Per-slice architecture and file range; headers, load-command metadata, sections, segments, relocations, imports, exports, symbols, dylib dependencies, entry point and code-signature blob |
 | ZIP containers | Inspect | Central-directory-only member tree, compressed/expanded sizes, CRC metadata, symlink detection, traversal/absolute-path hazards, expansion ratio and suspicious expanded-size findings; no extraction |
+| Electron ASAR archives | Inspect | Virtual member tree without extraction; per-member size and readable bytes for Hex, strings, search and hashing; header metadata including member count, declared bytes and data offset; unpacked members resolve to the sibling `.asar.unpacked` files |
+| Apple Compiled Asset Catalog (`.car`) | Inspect | BOM header metadata (version, block count, block table); named section keys such as CARHEADER, RENDITIONS, FACETKEYS and KEYFORMAT; renditions are not extracted |
+| Apple ICNS icons | Inspect | Declared size and a bounded chunk table listing icon types and byte sizes |
+| Chromium Data Pack (`.pak`) | Inspect | Version, text encoding, resource/alias counts and a bounded resource identifier index |
+| WebAssembly (`.wasm`) | Identify | Magic and version recognition with the universal search, strings, hash, entropy and Hex workflows |
+| Fonts (`.ttf`, `.otf`, `.woff`, `.woff2`) | Inspect | SFNT flavor, table count, family/subfamily/full/PostScript names, units-per-em, glyph count and weight class; WOFF/WOFF2 container metadata without decompression |
+| PDF (`.pdf`) | Inspect | Version, page count, title/author/creator/producer metadata and encryption indicator without rendering |
+| MP4 / M4A (`.mp4`, `.m4a`) | Inspect | Major and compatible brands, movie timescale and duration |
+| MP3 (`.mp3`) | Inspect | ID3v2 tag version/size plus the first MPEG audio frame's version, layer, bitrate, sample rate and channel mode |
+| Python bytecode (`.pyc`) | Identify | CPython magic number and hash-based flag |
+| GNU gettext (`.mo`) | Inspect | Endianness, revision, string count and table offsets |
+| Qt resources (`.rcc`, `.qm`) | Identify | Qt compiled-resource or message-catalog recognition and version |
+| Textures (`.ktx`, `.ktx2`, `.dds`, `.exr`) | Inspect | Container type, dimensions, faces and mipmap levels |
+| Apple Metal library (`.metallib`) | Identify | Container and version recognition; shader bytecode is not disassembled |
+| Swift modules (`.swiftmodule`, `.swiftdoc`) | Identify | Compiler-artifact recognition by magic; internals are not parsed |
 | tar, tar.gz and tgz | Inspect | Bounded member table, sizes, modes, links and path hazards without extracting files |
 | ar archives and static libraries | Inspect | Bounded member table and sizes; Debian packages receive the deeper platform audit above |
 | Apple UDIF/DMG | Inspect | Trailer and container metadata, partitions, sectors, compressed blocks and compression ratios; recognized by structure and never mounted |
@@ -174,7 +189,7 @@ ByteTrawl separates three levels of support: **audit** means platform-aware rele
 | SQLite 3 | Inspect | Header, page size, read/write versions, schema format and text encoding |
 | Images | Inspect | Format, dimensions and pixel count for image formats supported by the metadata parser; no EXIF forensics or image editor |
 | UTF-8 text and `.desktop` metadata | Inspect | Text/resource discovery, global search and parsed desktop-entry key/value metadata |
-| 7z, RAR and standalone compressed streams | Identify | Container/type identification plus universal file workflows; full member browsing is not yet implemented |
+| 7z, RAR and standalone gzip/bzip2/xz/zstd streams | Identify | Container/type identification plus universal file workflows; full member browsing is not yet implemented |
 | Unknown or extensionless files | Identify | Magic-based classification where possible; size and timestamps; byte/text search; bounded Hex; optional SHA-256/SHA-1/MD5, entropy and strings |
 
 ### Views and analysis operations

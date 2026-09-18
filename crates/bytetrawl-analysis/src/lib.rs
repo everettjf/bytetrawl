@@ -29,6 +29,8 @@ const MAX_STRUCTURED_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ARCHIVE_MEMBER_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_ARCHIVE_DECLARED_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const MAX_ARCHIVE_COMPRESSION_RATIO: u64 = 1_000;
+const MAX_ASAR_HEADER_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_CAR_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Clone, Default)]
 pub struct CancellationToken(Arc<AtomicBool>);
@@ -72,6 +74,7 @@ impl ArtifactReader {
             ArtifactSource::ArchiveMember {
                 uncompressed_size, ..
             } => *uncompressed_size,
+            ArtifactSource::ContainerFile { size, .. } => *size,
         };
         Ok(Self { source, length })
     }
@@ -211,6 +214,29 @@ impl ArtifactReader {
                 }
                 Ok(bytes)
             }
+            ArtifactSource::ContainerFile {
+                container,
+                offset: member_offset,
+                ..
+            } => {
+                let mut file = File::open(container).map_err(|source| ByteTrawlError::Io {
+                    path: container.clone(),
+                    source,
+                })?;
+                file.seek(SeekFrom::Start(member_offset.saturating_add(offset)))
+                    .map_err(|source| ByteTrawlError::Io {
+                        path: container.clone(),
+                        source,
+                    })?;
+                let mut bytes = vec![0; requested];
+                file.read_exact(&mut bytes)
+                    .map_err(|source| ByteTrawlError::Io {
+                        path: container.clone(),
+                        source,
+                    })?;
+                cancel.check()?;
+                Ok(bytes)
+            }
         }
     }
 }
@@ -226,6 +252,8 @@ pub fn open_artifact(path: &Path, cancel: &CancellationToken) -> Result<Artifact
         let mut root = build_file_node(path)?;
         if root.format == Some(FileFormat::Zip) {
             populate_zip_members(&mut root, cancel)?;
+        } else if root.format == Some(FileFormat::Asar) {
+            populate_asar_members(&mut root, cancel)?;
         }
         Ok(root)
     }
@@ -480,7 +508,282 @@ fn archive_member_kind(name: &str, is_directory: bool) -> ArtifactKind {
         "dylib" | "so" => ArtifactKind::DynamicLibrary,
         "a" | "lib" => ArtifactKind::StaticLibrary,
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "txt" | "strings" => ArtifactKind::Resource,
+        "icns" | "car" | "pak" | "wasm" => ArtifactKind::Resource,
+        "asar" => ArtifactKind::Archive,
+        "ttf" | "otf" | "woff" | "woff2" | "pdf" | "mp4" | "m4a" | "mov" | "mp3" | "pyc" | "mo"
+        | "qm" | "rcc" | "ktx" | "ktx2" | "dds" | "exr" | "stl" | "obj" | "metallib"
+        | "swiftmodule" | "swiftdoc" => ArtifactKind::Resource,
         _ => ArtifactKind::Unknown,
+    }
+}
+
+struct AsarHeader {
+    json: serde_json::Value,
+    data_offset: u64,
+}
+
+/// Parses the ASAR header, returning the decoded `{"files": ...}` JSON object and
+/// the absolute offset at which file payload data begins.
+fn parse_asar_header(path: &Path) -> Result<AsarHeader> {
+    let file = File::open(path).map_err(|source| ByteTrawlError::Io {
+        path: path.into(),
+        source,
+    })?;
+    let file_len = file
+        .metadata()
+        .map_err(|source| ByteTrawlError::Io {
+            path: path.into(),
+            source,
+        })?
+        .len();
+    let mut prefix = [0u8; 16];
+    std::io::Read::read_exact(&mut &file, &mut prefix).map_err(|source| ByteTrawlError::Io {
+        path: path.into(),
+        source,
+    })?;
+
+    // Modern header (Electron 12+): [u32=4][u32 pickle_len][u32 payload_len][u32 string_len][json]
+    // Legacy header (pre-12): [u32 header_len][u32 payload_len][u32 string_len][json]
+    let (pickle_len, json_offset, string_len) = if prefix[0..4] == [4, 0, 0, 0] {
+        let pickle_len = u32::from_le_bytes(prefix[4..8].try_into().unwrap_or([0; 4])) as u64;
+        let string_len = u32::from_le_bytes(prefix[12..16].try_into().unwrap_or([0; 4])) as u64;
+        (pickle_len, 16u64, string_len)
+    } else {
+        let header_len = u32::from_le_bytes(prefix[0..4].try_into().unwrap_or([0; 4])) as u64;
+        let string_len = u32::from_le_bytes(prefix[8..12].try_into().unwrap_or([0; 4])) as u64;
+        (header_len, 12u64, string_len)
+    };
+    if string_len > MAX_ASAR_HEADER_BYTES {
+        return Err(ByteTrawlError::Limit(format!(
+            "ASAR header exceeds {MAX_ASAR_HEADER_BYTES} bytes"
+        )));
+    }
+    let data_offset = 8u64
+        .checked_add(pickle_len)
+        .ok_or_else(|| ByteTrawlError::Limit("ASAR data offset overflows u64".into()))?;
+    if data_offset > file_len {
+        return Err(ByteTrawlError::Malformed(
+            "ASAR header declares a payload past the end of the file".into(),
+        ));
+    }
+    let mut file = File::open(path).map_err(|source| ByteTrawlError::Io {
+        path: path.into(),
+        source,
+    })?;
+    file.seek(SeekFrom::Start(json_offset))
+        .map_err(|source| ByteTrawlError::Io {
+            path: path.into(),
+            source,
+        })?;
+    let mut json_bytes = vec![0u8; string_len as usize];
+    file.read_exact(&mut json_bytes)
+        .map_err(|source| ByteTrawlError::Io {
+            path: path.into(),
+            source,
+        })?;
+    let json = serde_json::from_slice(&json_bytes)
+        .map_err(|error| ByteTrawlError::Malformed(format!("ASAR header JSON: {error}")))?;
+    Ok(AsarHeader { json, data_offset })
+}
+
+fn populate_asar_members(root: &mut ArtifactNode, cancel: &CancellationToken) -> Result<()> {
+    let header = parse_asar_header(&root.path)?;
+    let files = header
+        .json
+        .get("files")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            ByteTrawlError::Malformed("ASAR header is missing its files object".into())
+        })?;
+    let mut count = 0u64;
+    let mut declared = 0u64;
+    for (name, entry) in files {
+        insert_asar_entry(
+            root,
+            Path::new(name),
+            entry,
+            header.data_offset,
+            0,
+            &mut count,
+            &mut declared,
+            cancel,
+        )?;
+    }
+    root.kind = ArtifactKind::Archive;
+    root.properties
+        .insert("Archive Format".into(), "Electron ASAR".into());
+    root.properties
+        .insert("Archive Members".into(), count.to_string());
+    root.properties
+        .insert("Declared File Bytes".into(), declared.to_string());
+    root.properties.insert(
+        "Header Data Offset".into(),
+        format!("0x{:x}", header.data_offset),
+    );
+    root.properties.insert(
+        "Inspection Mode".into(),
+        "Virtual archive members; ByteTrawl did not extract this archive.".into(),
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_asar_entry(
+    root: &mut ArtifactNode,
+    member_path: &Path,
+    entry: &serde_json::Value,
+    data_offset: u64,
+    depth: usize,
+    count: &mut u64,
+    declared: &mut u64,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    cancel.check()?;
+    if depth > MAX_DEPTH {
+        return Err(ByteTrawlError::Limit(format!(
+            "ASAR member depth exceeds {MAX_DEPTH}"
+        )));
+    }
+    if let Some(files) = entry.get("files").and_then(serde_json::Value::as_object) {
+        for (name, child) in files {
+            insert_asar_entry(
+                root,
+                &member_path.join(name),
+                child,
+                data_offset,
+                depth + 1,
+                count,
+                declared,
+                cancel,
+            )?;
+        }
+        return Ok(());
+    }
+    let offset = entry.get("offset").and_then(asar_json_u64);
+    let size = entry
+        .get("size")
+        .and_then(asar_json_u64)
+        .ok_or_else(|| ByteTrawlError::Malformed("ASAR file entry is missing its size".into()))?;
+    *count = count
+        .checked_add(1)
+        .ok_or_else(|| ByteTrawlError::Limit("ASAR member count overflows u64".into()))?;
+    if *count > MAX_FILES as u64 {
+        return Err(ByteTrawlError::Limit(format!(
+            "ASAR contains more than {MAX_FILES} members"
+        )));
+    }
+    *declared = declared.saturating_add(size);
+    if size > MAX_ARCHIVE_MEMBER_BYTES {
+        return Err(ByteTrawlError::Limit(format!(
+            "ASAR member {} exceeds {MAX_ARCHIVE_MEMBER_BYTES} bytes",
+            member_path.display()
+        )));
+    }
+    let unpacked = entry
+        .get("unpacked")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let source = if unpacked || offset.is_none() {
+        // Unpacked entries are stored in the sibling `<archive>.unpacked` directory
+        // rather than inside the archive itself.
+        ArtifactSource::Filesystem {
+            path: PathBuf::from(format!("{}.unpacked", root.path.display())).join(member_path),
+        }
+    } else {
+        ArtifactSource::ContainerFile {
+            container: root.path.clone(),
+            member_path: member_path.to_path_buf(),
+            offset: data_offset.saturating_add(offset.unwrap_or(0)),
+            size,
+        }
+    };
+    insert_asar_member(root, member_path, source)?;
+    Ok(())
+}
+
+fn insert_asar_member(
+    root: &mut ArtifactNode,
+    member_path: &Path,
+    source: ArtifactSource,
+) -> Result<()> {
+    let components = member_path.components().collect::<Vec<_>>();
+    if components.is_empty() {
+        return Ok(());
+    }
+    let container_path = root.path.clone();
+    let mut current = root;
+    for (component_index, component) in components.iter().enumerate() {
+        let name = component.as_os_str().to_string_lossy().into_owned();
+        let is_last = component_index + 1 == components.len();
+        if let Some(existing_index) = current.children.iter().position(|node| node.name == name) {
+            current = &mut current.children[existing_index];
+            if is_last {
+                current.source = Some(source.clone());
+                current.size = container_source_size(&source);
+                current
+                    .properties
+                    .insert("Archive Member".into(), member_path.display().to_string());
+            }
+            continue;
+        }
+        let partial_path =
+            components[..=component_index]
+                .iter()
+                .fold(PathBuf::new(), |mut path, component| {
+                    path.push(component.as_os_str());
+                    path
+                });
+        let display_path = PathBuf::from(format!(
+            "{}!/{}",
+            container_path.display(),
+            partial_path.display()
+        ));
+        let node = if is_last {
+            let kind = archive_member_kind(&name, false);
+            // Unpacked members resolve to a real sibling file; use its actual path so
+            // filesystem-based analysis (hex, strings, hashing) reads the right bytes.
+            let node_path = match &source {
+                ArtifactSource::Filesystem { path } => path.clone(),
+                _ => display_path,
+            };
+            let mut node = ArtifactNode::new(name, node_path, kind);
+            node.source = Some(source.clone());
+            node.size = container_source_size(&source);
+            node.properties
+                .insert("Archive Member".into(), member_path.display().to_string());
+            node
+        } else {
+            let kind = archive_member_kind(&name, true);
+            let mut node = ArtifactNode::new(name, display_path, kind);
+            node.source = Some(ArtifactSource::ArchiveMember {
+                container: container_path.clone(),
+                member_path: partial_path,
+                entry_index: 0,
+                compressed_size: 0,
+                uncompressed_size: 0,
+                crc32: 0,
+                is_directory: true,
+            });
+            node.properties
+                .insert("Archive Directory".into(), "true".into());
+            node
+        };
+        current.children.push(node);
+        let inserted_index = current.children.len().saturating_sub(1);
+        current = &mut current.children[inserted_index];
+    }
+    Ok(())
+}
+
+fn container_source_size(source: &ArtifactSource) -> u64 {
+    match source {
+        ArtifactSource::ContainerFile { size, .. } => *size,
+        ArtifactSource::Filesystem { path } => {
+            std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+        }
+        ArtifactSource::ArchiveMember {
+            uncompressed_size, ..
+        } => *uncompressed_size,
     }
 }
 
@@ -729,6 +1032,21 @@ fn classify_file(path: &Path, format: FileFormat) -> ArtifactKind {
         FileFormat::Json | FileFormat::Xml | FileFormat::Plist => ArtifactKind::Metadata,
         FileFormat::Image | FileFormat::Text => ArtifactKind::Resource,
         FileFormat::DiskImage => ArtifactKind::DiskImage,
+        FileFormat::Asar => ArtifactKind::Archive,
+        FileFormat::AssetCatalog
+        | FileFormat::Icns
+        | FileFormat::Pak
+        | FileFormat::Wasm
+        | FileFormat::Font
+        | FileFormat::Pdf
+        | FileFormat::Mp4
+        | FileFormat::Mp3
+        | FileFormat::PythonBytecode
+        | FileFormat::Gettext
+        | FileFormat::QtResource
+        | FileFormat::Texture
+        | FileFormat::Metallib
+        | FileFormat::SwiftModule => ArtifactKind::Resource,
         _ if matches!(ext.as_str(), "pkg" | "mpkg" | "msi" | "deb" | "rpm") => {
             ArtifactKind::Package
         }
@@ -938,7 +1256,7 @@ pub fn analyze_node(node: &ArtifactNode) -> Result<Option<BinaryAnalysis>> {
         return Ok(None);
     }
     let mut analysis = match node.source.as_ref() {
-        Some(ArtifactSource::ArchiveMember { .. }) => {
+        Some(ArtifactSource::ArchiveMember { .. } | ArtifactSource::ContainerFile { .. }) => {
             let bytes = ArtifactReader::open(node)?.read_all(bytetrawl_format::MAX_PARSE_BYTES)?;
             analyze_binary(&bytes)?
         }
@@ -964,7 +1282,10 @@ pub fn analyze_node(node: &ArtifactNode) -> Result<Option<BinaryAnalysis>> {
 
 pub fn inspect_metadata(node: &ArtifactNode) -> Result<indexmap::IndexMap<String, String>> {
     let mut metadata = indexmap::IndexMap::new();
-    if matches!(node.source, Some(ArtifactSource::ArchiveMember { .. })) {
+    if matches!(
+        node.source,
+        Some(ArtifactSource::ArchiveMember { .. } | ArtifactSource::ContainerFile { .. })
+    ) {
         return inspect_archive_member_metadata(node);
     }
     match node.format {
@@ -1044,6 +1365,45 @@ pub fn inspect_metadata(node: &ArtifactNode) -> Result<indexmap::IndexMap<String
         Some(FileFormat::Image) => inspect_image_metadata(&node.path, &mut metadata)?,
         Some(FileFormat::Sqlite) => inspect_sqlite_metadata(&node.path, &mut metadata)?,
         Some(FileFormat::DiskImage) => inspect_disk_image_metadata(node, &mut metadata)?,
+        Some(FileFormat::Asar) => inspect_asar_metadata(node, &mut metadata)?,
+        Some(FileFormat::AssetCatalog) => inspect_asset_catalog_metadata(node, &mut metadata)?,
+        Some(FileFormat::Icns) => {
+            inspect_icns_metadata(&read_prefix(&node.path, 16 * 1024 * 1024)?, &mut metadata)?
+        }
+        Some(FileFormat::Pak) => {
+            inspect_pak_metadata(&read_prefix(&node.path, 64 * 1024 * 1024)?, &mut metadata)?
+        }
+        Some(FileFormat::Wasm) => {
+            inspect_wasm_metadata(&read_prefix(&node.path, 16)?, &mut metadata)?
+        }
+        Some(FileFormat::Font) => {
+            inspect_font_metadata(&read_prefix(&node.path, 16 * 1024 * 1024)?, &mut metadata)?
+        }
+        Some(FileFormat::Pdf) => inspect_pdf_metadata(node, &mut metadata)?,
+        Some(FileFormat::Mp4) => {
+            inspect_mp4_metadata(&read_prefix(&node.path, 64 * 1024 * 1024)?, &mut metadata)?
+        }
+        Some(FileFormat::Mp3) => {
+            inspect_mp3_metadata(&read_prefix(&node.path, 64 * 1024 * 1024)?, &mut metadata)?
+        }
+        Some(FileFormat::PythonBytecode) => {
+            inspect_python_bytecode_metadata(&read_prefix(&node.path, 64)?, &mut metadata)?
+        }
+        Some(FileFormat::Gettext) => {
+            inspect_gettext_metadata(&read_prefix(&node.path, 64)?, &mut metadata)?
+        }
+        Some(FileFormat::QtResource) => {
+            inspect_qt_resource_metadata(&read_prefix(&node.path, 64)?, &mut metadata)?
+        }
+        Some(FileFormat::Texture) => {
+            inspect_texture_metadata(&read_prefix(&node.path, 4096)?, &mut metadata)?
+        }
+        Some(FileFormat::Metallib) => {
+            inspect_metallib_metadata(&read_prefix(&node.path, 64)?, &mut metadata)?
+        }
+        Some(FileFormat::SwiftModule) => {
+            inspect_swift_module_metadata(&read_prefix(&node.path, 16)?, &mut metadata)?
+        }
         _ => {}
     }
     Ok(metadata)
@@ -1079,6 +1439,9 @@ fn inspect_archive_member_metadata(
         FileFormat::Sqlite if prefix.len() >= 100 => {
             inspect_sqlite_header(&prefix[..100], &mut metadata)?;
         }
+        FileFormat::Icns => inspect_icns_metadata(&prefix, &mut metadata)?,
+        FileFormat::Pak => inspect_pak_metadata(&prefix, &mut metadata)?,
+        FileFormat::Wasm => inspect_wasm_metadata(&prefix, &mut metadata)?,
         _ => {}
     }
     metadata.insert(
@@ -1412,6 +1775,12 @@ fn archive_format_label(prefix: &[u8]) -> &'static str {
         "RAR"
     } else if prefix.starts_with(b"\x1f\x8b") {
         "Gzip stream"
+    } else if prefix.starts_with(b"BZh") {
+        "Bzip2 stream"
+    } else if prefix.starts_with(b"\xfd7zXZ\0") {
+        "XZ stream"
+    } else if prefix.starts_with(b"\x28\xb5\x2f\xfd") {
+        "Zstandard stream"
     } else {
         "Recognized archive"
     }
@@ -1735,6 +2104,902 @@ fn inspect_zip_metadata(
             "No obvious extraction hazard in the central directory; ByteTrawl did not extract this archive."
         }
         .into(),
+    );
+    Ok(())
+}
+
+fn inspect_asar_metadata(
+    node: &ArtifactNode,
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    let header = parse_asar_header(&node.path)?;
+    let (count, declared) = header
+        .json
+        .get("files")
+        .and_then(serde_json::Value::as_object)
+        .map(count_asar_files)
+        .unwrap_or((0, 0));
+    metadata.insert("Archive Format".into(), "Electron ASAR".into());
+    metadata.insert(
+        "Header Data Offset".into(),
+        format!("0x{:x}", header.data_offset),
+    );
+    metadata.insert("Member Count".into(), count.to_string());
+    metadata.insert("Declared File Bytes".into(), declared.to_string());
+    if let Some(keys) = header.json.as_object() {
+        let extra = keys
+            .keys()
+            .filter(|key| key.as_str() != "files")
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if !extra.is_empty() {
+            metadata.insert("Header Keys".into(), extra.join(", "));
+        }
+    }
+    metadata.insert(
+        "Inspection Mode".into(),
+        "Virtual archive members; ByteTrawl did not extract this archive.".into(),
+    );
+    Ok(())
+}
+
+fn count_asar_files(files: &serde_json::Map<String, serde_json::Value>) -> (u64, u64) {
+    let mut count = 0u64;
+    let mut declared = 0u64;
+    for entry in files.values() {
+        if let Some(children) = entry.get("files").and_then(serde_json::Value::as_object) {
+            let (child_count, child_declared) = count_asar_files(children);
+            count = count.saturating_add(child_count);
+            declared = declared.saturating_add(child_declared);
+        } else if let Some(size) = entry.get("size").and_then(asar_json_u64) {
+            count = count.saturating_add(1);
+            declared = declared.saturating_add(size);
+        }
+    }
+    (count, declared)
+}
+
+fn asar_json_u64(value: &serde_json::Value) -> Option<u64> {
+    match value {
+        serde_json::Value::Number(number) => number.as_u64(),
+        serde_json::Value::String(text) => text.parse().ok(),
+        _ => None,
+    }
+}
+
+fn inspect_asset_catalog_metadata(
+    node: &ArtifactNode,
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if node.size > MAX_CAR_BYTES {
+        return Err(ByteTrawlError::Limit(format!(
+            "asset catalog exceeds {MAX_CAR_BYTES} bytes"
+        )));
+    }
+    let file = File::open(&node.path).map_err(|source| ByteTrawlError::Io {
+        path: node.path.clone(),
+        source,
+    })?;
+    // SAFETY: read-only mapping of a stable file descriptor owned for the map lifetime.
+    let map = unsafe { MmapOptions::new().map(&file) }.map_err(|source| ByteTrawlError::Io {
+        path: node.path.clone(),
+        source,
+    })?;
+    let bytes: &[u8] = &map;
+    if bytes.len() < 24 || &bytes[..8] != b"BOMStore" {
+        return Err(ByteTrawlError::Malformed(
+            "truncated asset catalog header".into(),
+        ));
+    }
+    let version = u32::from_be_bytes(bytes[8..12].try_into().unwrap_or([0; 4]));
+    let block_count = u32::from_be_bytes(bytes[12..16].try_into().unwrap_or([0; 4]));
+    let index_offset = u32::from_be_bytes(bytes[16..20].try_into().unwrap_or([0; 4]));
+    let index_length = u32::from_be_bytes(bytes[20..24].try_into().unwrap_or([0; 4]));
+    metadata.insert(
+        "Asset Catalog Format".into(),
+        "Apple Compiled Asset Catalog (Assets.car)".into(),
+    );
+    metadata.insert("BOM Version".into(), version.to_string());
+    metadata.insert("Block Count".into(), block_count.to_string());
+    metadata.insert("Block Table Offset".into(), format!("0x{index_offset:x}"));
+    metadata.insert("Block Table Length".into(), index_length.to_string());
+    let sections = extract_car_sections(bytes);
+    if !sections.is_empty() {
+        metadata.insert("Named Section Count".into(), sections.len().to_string());
+        metadata.insert("Named Sections".into(), sections.join(", "));
+    }
+    metadata.insert(
+        "Inspection Mode".into(),
+        "Static catalog metadata; individual renditions are not extracted.".into(),
+    );
+    Ok(())
+}
+
+/// Scans an asset catalog for keyed-archive keys arrays of the form
+/// `[u32 count][count × ([u32 index][u8 len][len identifier bytes])]` and returns
+/// the unique identifier names they contain.
+fn extract_car_sections(bytes: &[u8]) -> Vec<String> {
+    let mut names = std::collections::BTreeSet::new();
+    let mut cursor = 0usize;
+    while cursor + 8 <= bytes.len() && names.len() < 20_000 {
+        let count =
+            u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().unwrap_or([0; 4])) as usize;
+        if (2..=512).contains(&count) {
+            let mut position = cursor + 4;
+            let mut valid = true;
+            let mut batch = Vec::new();
+            for _ in 0..count {
+                if position + 5 > bytes.len() {
+                    valid = false;
+                    break;
+                }
+                let length = bytes[position + 4] as usize;
+                if !(3..=64).contains(&length) || position + 5 + length > bytes.len() {
+                    valid = false;
+                    break;
+                }
+                let name = &bytes[position + 5..position + 5 + length];
+                if !name
+                    .iter()
+                    .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+                {
+                    valid = false;
+                    break;
+                }
+                batch.push(String::from_utf8_lossy(name).into_owned());
+                position += 5 + length;
+            }
+            if valid {
+                names.extend(batch);
+                cursor = position;
+            } else {
+                cursor += 1;
+            }
+        } else {
+            cursor += 1;
+        }
+    }
+    names.into_iter().collect()
+}
+
+fn inspect_icns_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 8 || !bytes.starts_with(b"icns") {
+        return Err(ByteTrawlError::Malformed("truncated ICNS header".into()));
+    }
+    let total = u32::from_be_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
+    metadata.insert("Icon Format".into(), "Apple Icon Image (ICNS)".into());
+    metadata.insert("Declared Size".into(), total.to_string());
+    let mut offset = 8usize;
+    let mut count = 0usize;
+    let mut icons = Vec::new();
+    while offset + 8 <= bytes.len() && count < 4096 {
+        let icon_type = String::from_utf8_lossy(&bytes[offset..offset + 4]).into_owned();
+        let size =
+            u32::from_be_bytes(bytes[offset + 4..offset + 8].try_into().unwrap_or([0; 4])) as usize;
+        if size < 8 || offset + size > bytes.len() {
+            break;
+        }
+        icons.push(format!("{icon_type} · {size} bytes"));
+        offset += size;
+        count += 1;
+    }
+    metadata.insert("Icon Entries".into(), count.to_string());
+    for (index, icon) in icons.into_iter().take(200).enumerate() {
+        metadata.insert(format!("Icon {index:03}"), icon);
+    }
+    Ok(())
+}
+
+fn inspect_pak_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 12 {
+        return Err(ByteTrawlError::Malformed("truncated PAK header".into()));
+    }
+    let version = u32::from_le_bytes(bytes[0..4].try_into().unwrap_or([0; 4]));
+    let (encoding, resource_count, alias_count, header_size) = match version {
+        4 => {
+            if bytes.len() < 9 {
+                return Err(ByteTrawlError::Malformed("truncated PAK v4 header".into()));
+            }
+            let resource_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
+            (bytes[8], resource_count, 0u32, 9usize)
+        }
+        5 => {
+            let encoding = bytes[4];
+            let resource_count =
+                u16::from_le_bytes(bytes[8..10].try_into().unwrap_or([0; 2])) as u32;
+            let alias_count = u16::from_le_bytes(bytes[10..12].try_into().unwrap_or([0; 2])) as u32;
+            (encoding, resource_count, alias_count, 12usize)
+        }
+        other => {
+            return Err(ByteTrawlError::Malformed(format!(
+                "unsupported PAK version {other}"
+            )));
+        }
+    };
+    metadata.insert(
+        "Resource Pack Format".into(),
+        "Chromium Data Pack (PAK)".into(),
+    );
+    metadata.insert("Version".into(), version.to_string());
+    metadata.insert(
+        "Encoding".into(),
+        match encoding {
+            0 => "Binary",
+            1 => "UTF-8",
+            2 => "UTF-16",
+            _ => "Unknown",
+        }
+        .into(),
+    );
+    metadata.insert("Resource Count".into(), resource_count.to_string());
+    metadata.insert("Alias Count".into(), alias_count.to_string());
+    for index in 0..resource_count.min(100) {
+        let entry_offset = header_size + index as usize * 6;
+        if entry_offset + 6 <= bytes.len() {
+            let id = u16::from_le_bytes(bytes[entry_offset..entry_offset + 2].try_into().unwrap());
+            let data_offset = u32::from_le_bytes(
+                bytes[entry_offset + 2..entry_offset + 6]
+                    .try_into()
+                    .unwrap(),
+            );
+            metadata.insert(
+                format!("Resource {index:03}"),
+                format!("id {id} · offset 0x{data_offset:x}"),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn inspect_wasm_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 8 || !bytes.starts_with(b"\0asm") {
+        return Err(ByteTrawlError::Malformed(
+            "truncated WebAssembly header".into(),
+        ));
+    }
+    let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
+    metadata.insert("Binary Format".into(), "WebAssembly".into());
+    metadata.insert("Version".into(), version.to_string());
+    Ok(())
+}
+
+fn inspect_font_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 12 {
+        return Err(ByteTrawlError::Malformed("truncated font header".into()));
+    }
+    match &bytes[..4] {
+        b"wOFF" => inspect_woff_metadata(bytes, metadata),
+        b"wOF2" => inspect_woff2_metadata(bytes, metadata),
+        b"ttcf" => {
+            metadata.insert("Font Format".into(), "TrueType Collection (TTC)".into());
+            let count = u32::from_be_bytes(bytes[8..12].try_into().unwrap_or([0; 4]));
+            metadata.insert("Font Count".into(), count.to_string());
+            Ok(())
+        }
+        b"\0\x01\0\0" | b"OTTO" | b"true" => inspect_sfnt_metadata(bytes, metadata),
+        _ => Err(ByteTrawlError::Malformed("unrecognized font flavor".into())),
+    }
+}
+
+fn sfnt_flavor_name(flavor: u32) -> &'static str {
+    match flavor {
+        0x0001_0000 => "TrueType",
+        0x4f54_544f => "OpenType (CFF)",
+        0x7472_7565 => "TrueType (Apple 'true')",
+        _ => "SFNT",
+    }
+}
+
+fn inspect_sfnt_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    let flavor = u32::from_be_bytes(bytes[0..4].try_into().unwrap_or([0; 4]));
+    let num_tables = u16::from_be_bytes(bytes[4..6].try_into().unwrap_or([0; 2]));
+    metadata.insert("Font Format".into(), sfnt_flavor_name(flavor).into());
+    metadata.insert("Table Count".into(), num_tables.to_string());
+
+    let mut tables = Vec::new();
+    for index in 0..num_tables as usize {
+        let offset = 12 + index * 16;
+        if offset + 16 > bytes.len() {
+            break;
+        }
+        let tag = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap_or([0; 4]));
+        let table_offset = u32::from_be_bytes(bytes[offset + 8..offset + 12].try_into().unwrap());
+        let length = u32::from_be_bytes(bytes[offset + 12..offset + 16].try_into().unwrap());
+        tables.push((tag, table_offset as usize, length as usize));
+    }
+    for (tag, offset, length) in &tables {
+        if offset.saturating_add(*length) > bytes.len() {
+            continue;
+        }
+        match tag {
+            0x6e61_6d65 => parse_name_table(bytes, *offset, *length, metadata), // 'name'
+            // 'head' → unitsPerEm
+            0x6865_6164 if *offset + 20 <= bytes.len() => {
+                let units_per_em =
+                    u16::from_be_bytes(bytes[offset + 18..offset + 20].try_into().unwrap());
+                metadata.insert("Units Per Em".into(), units_per_em.to_string());
+            }
+            // 'maxp' → numGlyphs
+            0x6d61_7870 if *offset + 6 <= bytes.len() => {
+                let glyphs = u16::from_be_bytes(bytes[offset + 4..offset + 6].try_into().unwrap());
+                metadata.insert("Glyph Count".into(), glyphs.to_string());
+            }
+            // 'OS/2' → weight class
+            0x4f53_2f32 if *offset + 6 <= bytes.len() => {
+                let weight = u16::from_be_bytes(bytes[offset + 4..offset + 6].try_into().unwrap());
+                metadata.insert("Weight Class".into(), weight.to_string());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn parse_name_table(
+    bytes: &[u8],
+    offset: usize,
+    length: usize,
+    metadata: &mut indexmap::IndexMap<String, String>,
+) {
+    let table = &bytes[offset..offset.saturating_add(length)];
+    if table.len() < 6 {
+        return;
+    }
+    let count = u16::from_be_bytes(table[2..4].try_into().unwrap_or([0; 2])) as usize;
+    let string_offset = u16::from_be_bytes(table[4..6].try_into().unwrap_or([0; 2])) as usize;
+    let mut labels: [(usize, &str); 4] = [
+        (1, "Family"),
+        (2, "Subfamily"),
+        (4, "Full Name"),
+        (6, "PostScript Name"),
+    ];
+    for index in 0..count {
+        let record = 6 + index * 12;
+        if record + 12 > table.len() {
+            break;
+        }
+        let platform = u16::from_be_bytes(table[record..record + 2].try_into().unwrap());
+        let name_id = u16::from_be_bytes(table[record + 6..record + 8].try_into().unwrap());
+        let name_len =
+            u16::from_be_bytes(table[record + 8..record + 10].try_into().unwrap()) as usize;
+        let name_offset =
+            u16::from_be_bytes(table[record + 10..record + 12].try_into().unwrap()) as usize;
+        let start = string_offset + name_offset;
+        if start.saturating_add(name_len) > table.len() {
+            continue;
+        }
+        let raw = &table[start..start + name_len];
+        let text = if platform == 3 || platform == 0 {
+            decode_utf16be(raw)
+        } else {
+            String::from_utf8_lossy(raw).into_owned()
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        if let Some(entry) = labels.iter_mut().find(|(id, _)| *id == name_id as usize)
+            && metadata.get(entry.1).is_none()
+        {
+            metadata.insert(entry.1.to_string(), text);
+        }
+    }
+}
+
+fn decode_utf16be(bytes: &[u8]) -> String {
+    let mut units = Vec::with_capacity(bytes.len() / 2);
+    let mut cursor = 0;
+    while cursor + 1 < bytes.len() {
+        units.push(u16::from_be_bytes([bytes[cursor], bytes[cursor + 1]]));
+        cursor += 2;
+    }
+    String::from_utf16_lossy(&units)
+}
+
+fn inspect_woff_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 24 {
+        return Err(ByteTrawlError::Malformed("truncated WOFF header".into()));
+    }
+    let flavor = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
+    let length = u32::from_be_bytes(bytes[8..12].try_into().unwrap());
+    let num_tables = u16::from_be_bytes(bytes[12..14].try_into().unwrap());
+    let total_sfnt = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+    let major = u16::from_be_bytes(bytes[20..22].try_into().unwrap());
+    let minor = u16::from_be_bytes(bytes[22..24].try_into().unwrap());
+    metadata.insert("Font Format".into(), "WOFF".into());
+    metadata.insert("Flavor".into(), sfnt_flavor_name(flavor).into());
+    metadata.insert("Declared Size".into(), length.to_string());
+    metadata.insert("Table Count".into(), num_tables.to_string());
+    metadata.insert("Total SFNT Size".into(), total_sfnt.to_string());
+    metadata.insert("Version".into(), format!("{major}.{minor}"));
+    Ok(())
+}
+
+fn inspect_woff2_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 28 {
+        return Err(ByteTrawlError::Malformed("truncated WOFF2 header".into()));
+    }
+    let flavor = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
+    let length = u32::from_be_bytes(bytes[8..12].try_into().unwrap());
+    let num_tables = u16::from_be_bytes(bytes[12..14].try_into().unwrap());
+    let total_sfnt = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+    let total_compressed = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
+    let major = u16::from_be_bytes(bytes[24..26].try_into().unwrap());
+    let minor = u16::from_be_bytes(bytes[26..28].try_into().unwrap());
+    metadata.insert("Font Format".into(), "WOFF2".into());
+    metadata.insert("Flavor".into(), sfnt_flavor_name(flavor).into());
+    metadata.insert("Declared Size".into(), length.to_string());
+    metadata.insert("Table Count".into(), num_tables.to_string());
+    metadata.insert("Total SFNT Size".into(), total_sfnt.to_string());
+    metadata.insert("Compressed Size".into(), total_compressed.to_string());
+    metadata.insert("Version".into(), format!("{major}.{minor}"));
+    Ok(())
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn inspect_pdf_metadata(
+    node: &ArtifactNode,
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if node.size > MAX_CAR_BYTES {
+        return Err(ByteTrawlError::Limit(format!(
+            "PDF exceeds {MAX_CAR_BYTES} bytes"
+        )));
+    }
+    let file = File::open(&node.path).map_err(|source| ByteTrawlError::Io {
+        path: node.path.clone(),
+        source,
+    })?;
+    // SAFETY: read-only mapping of a stable file descriptor owned for the map lifetime.
+    let map = unsafe { MmapOptions::new().map(&file) }.map_err(|source| ByteTrawlError::Io {
+        path: node.path.clone(),
+        source,
+    })?;
+    let bytes: &[u8] = &map;
+    if bytes.len() < 8 || !bytes.starts_with(b"%PDF-") {
+        return Err(ByteTrawlError::Malformed("truncated PDF header".into()));
+    }
+    let version = String::from_utf8_lossy(&bytes[5..8]).trim().to_string();
+    metadata.insert("Document Format".into(), "PDF".into());
+    metadata.insert("Version".into(), version);
+    if let Some(pages) = pdf_integer(bytes, b"/Count") {
+        metadata.insert("Pages".into(), pages.to_string());
+    }
+    for (marker, label) in [
+        (b"/Title".as_slice(), "Title"),
+        (b"/Author".as_slice(), "Author"),
+        (b"/Creator".as_slice(), "Creator"),
+        (b"/Producer".as_slice(), "Producer"),
+    ] {
+        if let Some(value) = pdf_string(bytes, marker) {
+            metadata.insert(label.into(), value);
+        }
+    }
+    if find_bytes(bytes, b"/Encrypt").is_some() {
+        metadata.insert("Encrypted".into(), "Yes".into());
+    }
+    Ok(())
+}
+
+fn pdf_integer(bytes: &[u8], marker: &[u8]) -> Option<u64> {
+    let position = find_bytes(bytes, marker)? + marker.len();
+    let mut cursor = position;
+    while cursor < bytes.len() && (bytes[cursor].is_ascii_whitespace()) {
+        cursor += 1;
+    }
+    let start = cursor;
+    while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+        cursor += 1;
+    }
+    let text = std::str::from_utf8(&bytes[start..cursor]).ok()?;
+    text.parse().ok()
+}
+
+fn pdf_string(bytes: &[u8], marker: &[u8]) -> Option<String> {
+    let position = find_bytes(bytes, marker)? + marker.len();
+    let mut cursor = position;
+    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    if bytes.get(cursor) != Some(&b'(') {
+        return None;
+    }
+    cursor += 1;
+    let mut depth = 1usize;
+    let mut out = Vec::new();
+    while cursor < bytes.len() && depth > 0 && out.len() < 4096 {
+        match bytes[cursor] {
+            b'(' => {
+                depth += 1;
+                out.push(b'(');
+            }
+            b')' => {
+                depth -= 1;
+                if depth > 0 {
+                    out.push(b')');
+                }
+            }
+            b'\\' if cursor + 1 < bytes.len() => {
+                cursor += 1;
+                out.push(bytes[cursor]);
+            }
+            byte => out.push(byte),
+        }
+        cursor += 1;
+    }
+    Some(String::from_utf8_lossy(&out).into_owned())
+}
+
+fn inspect_mp4_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 16 || bytes.get(4..8) != Some(b"ftyp") {
+        return Err(ByteTrawlError::Malformed("truncated MP4 header".into()));
+    }
+    let major = String::from_utf8_lossy(&bytes[8..12]).into_owned();
+    metadata.insert("Container Format".into(), "MP4 / ISO Base Media".into());
+    metadata.insert("Major Brand".into(), major);
+    let mut brands = Vec::new();
+    let mut cursor = 16usize;
+    while cursor + 4 <= bytes.len() && brands.len() < 32 {
+        let brand = &bytes[cursor..cursor + 4];
+        if !brand
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b' ')
+        {
+            break;
+        }
+        brands.push(String::from_utf8_lossy(brand).into_owned());
+        cursor += 4;
+    }
+    if !brands.is_empty() {
+        metadata.insert("Compatible Brands".into(), brands.join(", "));
+    }
+    if let Some((timescale, duration)) = mp4_movie_header(bytes) {
+        metadata.insert("Timescale".into(), timescale.to_string());
+        metadata.insert("Duration Units".into(), duration.to_string());
+        if timescale > 0 {
+            metadata.insert(
+                "Duration".into(),
+                format!("{:.2} s", duration as f64 / timescale as f64),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn mp4_movie_header(bytes: &[u8]) -> Option<(u32, u64)> {
+    let position = find_bytes(bytes, b"mvhd")?;
+    if position + 4 > bytes.len() {
+        return None;
+    }
+    match bytes[position + 4] {
+        0 if position + 24 <= bytes.len() => {
+            let timescale =
+                u32::from_be_bytes(bytes[position + 16..position + 20].try_into().ok()?);
+            let duration =
+                u32::from_be_bytes(bytes[position + 20..position + 24].try_into().ok()?) as u64;
+            Some((timescale, duration))
+        }
+        1 if position + 36 <= bytes.len() => {
+            let timescale =
+                u32::from_be_bytes(bytes[position + 24..position + 28].try_into().ok()?);
+            let duration = u64::from_be_bytes(bytes[position + 28..position + 36].try_into().ok()?);
+            Some((timescale, duration))
+        }
+        _ => None,
+    }
+}
+
+fn inspect_mp3_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    metadata.insert("Audio Format".into(), "MPEG Audio (MP3)".into());
+    if bytes.starts_with(b"ID3") && bytes.len() >= 10 {
+        let major = bytes[3];
+        let revision = bytes[4];
+        let size = syncsafe_u32(&bytes[6..10]);
+        metadata.insert("ID3 Tag".into(), format!("v2.{major}.{revision}"));
+        metadata.insert("ID3 Tag Size".into(), size.to_string());
+    }
+    if let Some((version, layer, bitrate, sample_rate, channels)) = mp3_frame_info(bytes) {
+        metadata.insert("MPEG Version".into(), version);
+        metadata.insert("Layer".into(), layer);
+        metadata.insert("Bitrate".into(), format!("{bitrate} kbps"));
+        metadata.insert("Sample Rate".into(), format!("{sample_rate} Hz"));
+        metadata.insert("Channel Mode".into(), channels);
+    }
+    Ok(())
+}
+
+fn syncsafe_u32(bytes: &[u8]) -> u32 {
+    bytes
+        .iter()
+        .fold(0u32, |acc, byte| (acc << 7) | (byte & 0x7f) as u32)
+}
+
+fn mp3_frame_info(bytes: &[u8]) -> Option<(String, String, u16, u32, String)> {
+    // Locate the first MPEG audio frame sync word.
+    let mut cursor = 0usize;
+    let header = loop {
+        if cursor + 3 >= bytes.len() {
+            return None;
+        }
+        if bytes[cursor] == 0xff && (bytes[cursor + 1] & 0xe0) == 0xe0 {
+            break u32::from_be_bytes([
+                bytes[cursor],
+                bytes[cursor + 1],
+                bytes[cursor + 2],
+                bytes[cursor + 3],
+            ]);
+        }
+        cursor += 1;
+    };
+    let version_bits = (header >> 19) & 0x3;
+    let layer_bits = (header >> 17) & 0x3;
+    let bitrate_index = ((header >> 12) & 0xf) as usize;
+    let sample_index = ((header >> 10) & 0x3) as usize;
+    let channel_mode = ((header >> 6) & 0x3) as usize;
+
+    let version = match version_bits {
+        3 => "MPEG 1",
+        2 => "MPEG 2",
+        0 => "MPEG 2.5",
+        _ => return None,
+    };
+    let layer = match layer_bits {
+        1 => "Layer III",
+        2 => "Layer II",
+        3 => "Layer I",
+        _ => return None,
+    };
+    let bitrate_table: &[u16] = match (version_bits, layer_bits) {
+        (3, 1) => &[
+            0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+        ],
+        (3, 2) => &[
+            0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384,
+        ],
+        (3, 3) => &[
+            0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448,
+        ],
+        (2, 1) | (0, 1) => &[0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
+        (2, 2) | (0, 2) => &[0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
+        _ => &[
+            0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256,
+        ],
+    };
+    let bitrate = *bitrate_table.get(bitrate_index)?;
+    let sample_rates: &[u32] = match version_bits {
+        3 => &[44_100, 48_000, 32_000],
+        2 => &[22_050, 24_000, 16_000],
+        _ => &[11_025, 12_000, 8_000],
+    };
+    let sample_rate = *sample_rates.get(sample_index)?;
+    let channels = match channel_mode {
+        3 => "Mono",
+        _ => "Stereo/Joint/Other",
+    };
+    Some((
+        version.into(),
+        layer.into(),
+        bitrate,
+        sample_rate,
+        channels.into(),
+    ))
+}
+
+fn inspect_python_bytecode_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 8 {
+        return Err(ByteTrawlError::Malformed("truncated pyc header".into()));
+    }
+    metadata.insert("Bytecode Format".into(), "CPython bytecode (.pyc)".into());
+    metadata.insert(
+        "Magic".into(),
+        format!(
+            "{:02x}{:02x}{:02x}{:02x}",
+            bytes[0], bytes[1], bytes[2], bytes[3]
+        ),
+    );
+    let flags = u32::from_le_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
+    if flags & 1 != 0 {
+        metadata.insert("Hash-Based".into(), "Yes".into());
+    }
+    Ok(())
+}
+
+fn inspect_gettext_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 20 {
+        return Err(ByteTrawlError::Malformed("truncated gettext header".into()));
+    }
+    let little_endian = bytes.starts_with(b"\xde\x12\x04\x95");
+    let read_u32 = |offset: usize| -> u32 {
+        let raw: [u8; 4] = bytes[offset..offset + 4].try_into().unwrap_or([0; 4]);
+        if little_endian {
+            u32::from_le_bytes(raw)
+        } else {
+            u32::from_be_bytes(raw)
+        }
+    };
+    metadata.insert("Catalog Format".into(), "GNU gettext (.mo)".into());
+    metadata.insert(
+        "Endianness".into(),
+        if little_endian { "Little" } else { "Big" }.into(),
+    );
+    metadata.insert("Revision".into(), read_u32(4).to_string());
+    metadata.insert("String Count".into(), read_u32(8).to_string());
+    metadata.insert("Original Table Offset".into(), read_u32(12).to_string());
+    metadata.insert("Translation Table Offset".into(), read_u32(16).to_string());
+    Ok(())
+}
+
+fn inspect_qt_resource_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.starts_with(b"qres") {
+        metadata.insert(
+            "Resource Format".into(),
+            "Qt compiled resource (.rcc)".into(),
+        );
+        if bytes.len() >= 8 {
+            let version = u32::from_be_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
+            metadata.insert("Version".into(), version.to_string());
+        }
+    } else if bytes.starts_with(b"\x3c\xb8\x64\x18") {
+        metadata.insert("Resource Format".into(), "Qt message catalog (.qm)".into());
+    } else {
+        return Err(ByteTrawlError::Malformed(
+            "unrecognized Qt resource header".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn inspect_texture_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.starts_with(b"\xabKTX 11") && bytes.len() >= 64 {
+        let width = u32::from_le_bytes(bytes[36..40].try_into().unwrap_or([0; 4]));
+        let height = u32::from_le_bytes(bytes[40..44].try_into().unwrap_or([0; 4]));
+        let depth = u32::from_le_bytes(bytes[44..48].try_into().unwrap_or([0; 4]));
+        let faces = u32::from_le_bytes(bytes[52..56].try_into().unwrap_or([0; 4]));
+        let mipmaps = u32::from_le_bytes(bytes[56..60].try_into().unwrap_or([0; 4]));
+        metadata.insert("Texture Format".into(), "Khronos KTX 1".into());
+        metadata.insert("Width".into(), width.to_string());
+        metadata.insert("Height".into(), height.to_string());
+        metadata.insert("Depth".into(), depth.to_string());
+        metadata.insert("Faces".into(), faces.to_string());
+        metadata.insert("Mipmap Levels".into(), mipmaps.to_string());
+    } else if bytes.starts_with(b"\xabKTX 20") && bytes.len() >= 48 {
+        let width = u32::from_le_bytes(bytes[20..24].try_into().unwrap_or([0; 4]));
+        let height = u32::from_le_bytes(bytes[24..28].try_into().unwrap_or([0; 4]));
+        let levels = u32::from_le_bytes(bytes[40..44].try_into().unwrap_or([0; 4]));
+        metadata.insert("Texture Format".into(), "Khronos KTX 2".into());
+        metadata.insert("Width".into(), width.to_string());
+        metadata.insert("Height".into(), height.to_string());
+        metadata.insert("Mipmap Levels".into(), levels.to_string());
+    } else if bytes.starts_with(b"DDS ") && bytes.len() >= 32 {
+        let height = u32::from_le_bytes(bytes[12..16].try_into().unwrap_or([0; 4]));
+        let width = u32::from_le_bytes(bytes[16..20].try_into().unwrap_or([0; 4]));
+        let mipmaps = u32::from_le_bytes(bytes[28..32].try_into().unwrap_or([0; 4]));
+        metadata.insert("Texture Format".into(), "DirectDraw Surface (DDS)".into());
+        metadata.insert("Width".into(), width.to_string());
+        metadata.insert("Height".into(), height.to_string());
+        metadata.insert("Mipmap Levels".into(), mipmaps.to_string());
+    } else if bytes.starts_with(b"\x76\x2f\x31\x01") && bytes.len() >= 8 {
+        let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
+        metadata.insert("Texture Format".into(), "OpenEXR".into());
+        metadata.insert("Version".into(), version.to_string());
+        if let Some((width, height)) = exr_data_window(bytes) {
+            metadata.insert("Width".into(), width.to_string());
+            metadata.insert("Height".into(), height.to_string());
+        }
+    } else {
+        return Err(ByteTrawlError::Malformed(
+            "unrecognized texture header".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn exr_data_window(bytes: &[u8]) -> Option<(i64, i64)> {
+    let position = find_bytes(bytes, b"dataWindow")?;
+    // attribute: name\0 type\0 size(u32) data; type is "box2i\0".
+    let mut cursor = position + b"dataWindow".len() + 1;
+    if bytes.get(cursor..cursor + 6) != Some(b"box2i\0") {
+        return None;
+    }
+    cursor += 6;
+    let _size = u32::from_le_bytes(bytes.get(cursor..cursor + 4)?.try_into().ok()?) as usize;
+    cursor += 4;
+    let x_min = i32::from_le_bytes(bytes.get(cursor..cursor + 4)?.try_into().ok()?) as i64;
+    let y_min = i32::from_le_bytes(bytes.get(cursor + 4..cursor + 8)?.try_into().ok()?) as i64;
+    let x_max = i32::from_le_bytes(bytes.get(cursor + 8..cursor + 12)?.try_into().ok()?) as i64;
+    let y_max = i32::from_le_bytes(bytes.get(cursor + 12..cursor + 16)?.try_into().ok()?) as i64;
+    Some((x_max - x_min + 1, y_max - y_min + 1))
+}
+
+fn inspect_metallib_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 8 || !bytes.starts_with(b"MTLB") {
+        return Err(ByteTrawlError::Malformed(
+            "truncated metallib header".into(),
+        ));
+    }
+    metadata.insert(
+        "Library Format".into(),
+        "Apple Metal Library (.metallib)".into(),
+    );
+    metadata.insert(
+        "Version".into(),
+        format!("{}.{}.{}", bytes[4], bytes[5], bytes[6]),
+    );
+    metadata.insert(
+        "Inspection Mode".into(),
+        "Static container identification; shader bytecode is not disassembled.".into(),
+    );
+    Ok(())
+}
+
+fn inspect_swift_module_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.starts_with(b"\xe2\x9c\xa8\x0e") {
+        metadata.insert("Binary Format".into(), "Swift module (.swiftmodule)".into());
+    } else if bytes.starts_with(b"\xe2\x9c\xa8\x07") {
+        metadata.insert(
+            "Binary Format".into(),
+            "Swift documentation module (.swiftdoc)".into(),
+        );
+    } else {
+        return Err(ByteTrawlError::Malformed(
+            "unrecognized Swift module magic".into(),
+        ));
+    }
+    metadata.insert(
+        "Inspection Mode".into(),
+        "Compiler artifact identified by magic; internals are not parsed.".into(),
     );
     Ok(())
 }
@@ -2131,7 +3396,10 @@ pub fn hash_node(
     options: HashOptions,
     cancel: &CancellationToken,
 ) -> Result<FileSummary> {
-    if !matches!(node.source, Some(ArtifactSource::ArchiveMember { .. })) {
+    if !matches!(
+        node.source,
+        Some(ArtifactSource::ArchiveMember { .. } | ArtifactSource::ContainerFile { .. })
+    ) {
         return hash_file(&node.path, options, cancel);
     }
     let reader = ArtifactReader::open(node)?;
@@ -2375,7 +3643,7 @@ pub fn extract_strings_node_cancellable(
 ) -> Result<Vec<ExtractedString>> {
     cancel.check()?;
     match node.source.as_ref() {
-        Some(ArtifactSource::ArchiveMember { .. }) => {
+        Some(ArtifactSource::ArchiveMember { .. } | ArtifactSource::ContainerFile { .. }) => {
             let bytes = ArtifactReader::open(node)?.read_all(MAX_ARCHIVE_MEMBER_BYTES)?;
             cancel.check()?;
             extract_strings_inner(&bytes, minimum, limit, Some(cancel))
@@ -2443,7 +3711,7 @@ pub fn search_node(
         return Ok(None);
     }
     match node.source.as_ref() {
-        Some(ArtifactSource::ArchiveMember { .. }) => {
+        Some(ArtifactSource::ArchiveMember { .. } | ArtifactSource::ContainerFile { .. }) => {
             cancel.check()?;
             let reader = ArtifactReader::open(node)?;
             if start >= reader.len() {
@@ -3581,5 +4849,213 @@ mod tests {
             Err(ByteTrawlError::Cancelled)
         ));
         std::fs::remove_file(path).expect("remove cancellation fixture");
+    }
+
+    fn write_asar(files_json: &str, payload: &[u8]) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("bytetrawl-asar-{}.asar", uuid::Uuid::new_v4()));
+        let json_bytes = files_json.as_bytes().to_vec();
+        let string_len = json_bytes.len() as u32;
+        let pad = (4 - (json_bytes.len() % 4)) % 4;
+        let mut payload_blob = Vec::new();
+        payload_blob.extend_from_slice(&string_len.to_le_bytes());
+        payload_blob.extend_from_slice(&json_bytes);
+        payload_blob.extend(std::iter::repeat_n(0u8, pad));
+        let payload_size = payload_blob.len() as u32;
+        let mut pickle = Vec::new();
+        pickle.extend_from_slice(&payload_size.to_le_bytes());
+        pickle.extend_from_slice(&payload_blob);
+        let pickle_len = pickle.len() as u32;
+        let mut file = Vec::new();
+        file.extend_from_slice(&4u32.to_le_bytes());
+        file.extend_from_slice(&pickle_len.to_le_bytes());
+        file.extend_from_slice(&pickle);
+        file.extend_from_slice(payload);
+        std::fs::write(&path, &file).expect("write ASAR fixture");
+        path
+    }
+
+    #[test]
+    fn asar_archive_exposes_virtual_member_tree_and_reads_member_bytes() {
+        let path = write_asar(
+            r#"{"files":{"a.js":{"size":11,"offset":"0"},"sub":{"files":{"b.txt":{"size":5,"offset":"11"}}}}}"#,
+            b"hello worldrest!",
+        );
+        let root = open_artifact(&path, &CancellationToken::default()).expect("open ASAR");
+        assert_eq!(root.format, Some(FileFormat::Asar));
+        assert_eq!(root.kind, ArtifactKind::Archive);
+        let files: Vec<_> = root.files().collect();
+        let a = files.iter().find(|node| node.name == "a.js").expect("a.js");
+        let b = files
+            .iter()
+            .find(|node| node.name == "b.txt")
+            .expect("b.txt");
+        assert_eq!(a.size, 11);
+        assert_eq!(b.size, 5);
+        assert_eq!(
+            ArtifactReader::open(a).unwrap().read_all(1024).unwrap(),
+            b"hello world"
+        );
+        assert_eq!(
+            ArtifactReader::open(b).unwrap().read_all(1024).unwrap(),
+            b"rest!"
+        );
+        std::fs::remove_file(path).expect("remove ASAR fixture");
+    }
+
+    #[test]
+    fn extracts_asset_catalog_section_names() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&3u32.to_be_bytes());
+        for (index, name) in [(1u32, "CARHEADER"), (2, "RENDITIONS"), (4, "FACETKEYS")] {
+            bytes.extend_from_slice(&index.to_be_bytes());
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        let sections = extract_car_sections(&bytes);
+        assert!(sections.contains(&"CARHEADER".to_string()));
+        assert!(sections.contains(&"RENDITIONS".to_string()));
+        assert!(sections.contains(&"FACETKEYS".to_string()));
+    }
+
+    #[test]
+    fn parses_icns_chunk_table() {
+        let mut bytes = vec![b'i', b'c', b'n', b's'];
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(b"ic07");
+        bytes.extend_from_slice(&16u32.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 8]);
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_icns_metadata(&bytes, &mut metadata).expect("parse ICNS");
+        assert_eq!(metadata.get("Icon Entries").map(String::as_str), Some("1"));
+        assert!(metadata["Icon 000"].starts_with("ic07"));
+    }
+
+    #[test]
+    fn parses_pak_v5_header() {
+        let mut bytes = vec![0u8; 12];
+        bytes[0..4].copy_from_slice(&5u32.to_le_bytes());
+        bytes[4] = 1;
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_pak_metadata(&bytes, &mut metadata).expect("parse PAK");
+        assert_eq!(metadata.get("Version").map(String::as_str), Some("5"));
+        assert_eq!(metadata.get("Encoding").map(String::as_str), Some("UTF-8"));
+    }
+
+    #[test]
+    fn parses_wasm_header() {
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_wasm_metadata(b"\0asm\x01\x00\x00\x00rest", &mut metadata).expect("parse WASM");
+        assert_eq!(
+            metadata.get("Binary Format").map(String::as_str),
+            Some("WebAssembly")
+        );
+        assert_eq!(metadata.get("Version").map(String::as_str), Some("1"));
+    }
+
+    #[test]
+    fn parses_sfnt_font_tables() {
+        // Minimal TrueType: two tables (head, maxp).
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+        bytes.extend_from_slice(&2u16.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 6]); // searchRange/entrySelector/rangeShift
+        let head_offset = (12 + 2 * 16) as u32;
+        let maxp_offset = head_offset + 54;
+        // head entry
+        bytes.extend_from_slice(&0x6865_6164u32.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 4]); // checksum
+        bytes.extend_from_slice(&head_offset.to_be_bytes());
+        bytes.extend_from_slice(&54u32.to_be_bytes());
+        // maxp entry
+        bytes.extend_from_slice(&0x6d61_7870u32.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 4]); // checksum
+        bytes.extend_from_slice(&maxp_offset.to_be_bytes());
+        bytes.extend_from_slice(&6u32.to_be_bytes());
+        // head table: unitsPerEm = 1000 at offset 18
+        let mut head = vec![0u8; 54];
+        head[18..20].copy_from_slice(&1000u16.to_be_bytes());
+        bytes.extend_from_slice(&head);
+        // maxp table: numGlyphs = 123 at offset 4
+        let mut maxp = vec![0u8; 6];
+        maxp[4..6].copy_from_slice(&123u16.to_be_bytes());
+        bytes.extend_from_slice(&maxp);
+
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_font_metadata(&bytes, &mut metadata).expect("parse SFNT");
+        assert_eq!(
+            metadata.get("Font Format").map(String::as_str),
+            Some("TrueType")
+        );
+        assert_eq!(
+            metadata.get("Units Per Em").map(String::as_str),
+            Some("1000")
+        );
+        assert_eq!(metadata.get("Glyph Count").map(String::as_str), Some("123"));
+    }
+
+    #[test]
+    fn parses_gettext_header() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"\xde\x12\x04\x95");
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // revision
+        bytes.extend_from_slice(&42u32.to_le_bytes()); // string count
+        bytes.extend_from_slice(&28u32.to_le_bytes());
+        bytes.extend_from_slice(&1000u32.to_le_bytes());
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_gettext_metadata(&bytes, &mut metadata).expect("parse gettext");
+        assert_eq!(metadata.get("String Count").map(String::as_str), Some("42"));
+        assert_eq!(
+            metadata.get("Endianness").map(String::as_str),
+            Some("Little")
+        );
+    }
+
+    #[test]
+    fn parses_dds_and_ktx_texture_dimensions() {
+        let mut dds = vec![0u8; 32];
+        dds[0..4].copy_from_slice(b"DDS ");
+        dds[4..8].copy_from_slice(&124u32.to_le_bytes());
+        dds[12..16].copy_from_slice(&256u32.to_le_bytes()); // height
+        dds[16..20].copy_from_slice(&512u32.to_le_bytes()); // width
+        dds[28..32].copy_from_slice(&7u32.to_le_bytes()); // mipmaps
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_texture_metadata(&dds, &mut metadata).expect("parse DDS");
+        assert_eq!(metadata.get("Width").map(String::as_str), Some("512"));
+        assert_eq!(metadata.get("Height").map(String::as_str), Some("256"));
+        assert_eq!(metadata.get("Mipmap Levels").map(String::as_str), Some("7"));
+
+        let mut ktx = vec![0u8; 64];
+        ktx[0..12].copy_from_slice(b"\xabKTX 11\xbb\r\n\x1a\n");
+        ktx[36..40].copy_from_slice(&64u32.to_le_bytes()); // width
+        ktx[40..44].copy_from_slice(&48u32.to_le_bytes()); // height
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_texture_metadata(&ktx, &mut metadata).expect("parse KTX");
+        assert_eq!(metadata.get("Width").map(String::as_str), Some("64"));
+        assert_eq!(metadata.get("Height").map(String::as_str), Some("48"));
+    }
+
+    #[test]
+    fn parses_mp3_frame_header() {
+        // MPEG 1 Layer III, 128 kbps, 44100 Hz frame header.
+        let header: u32 = 0xfffb_9000;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&header.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 8]);
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_mp3_metadata(&bytes, &mut metadata).expect("parse MP3");
+        assert_eq!(
+            metadata.get("MPEG Version").map(String::as_str),
+            Some("MPEG 1")
+        );
+        assert_eq!(metadata.get("Layer").map(String::as_str), Some("Layer III"));
+        assert_eq!(
+            metadata.get("Bitrate").map(String::as_str),
+            Some("128 kbps")
+        );
+        assert_eq!(
+            metadata.get("Sample Rate").map(String::as_str),
+            Some("44100 Hz")
+        );
     }
 }

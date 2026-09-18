@@ -387,7 +387,10 @@ fn type_deltas(
 
 fn logical_path(root: &ArtifactNode, node: &ArtifactNode) -> Option<PathBuf> {
     match node.source.as_ref() {
-        Some(ArtifactSource::ArchiveMember { member_path, .. }) => Some(member_path.clone()),
+        Some(
+            ArtifactSource::ArchiveMember { member_path, .. }
+            | ArtifactSource::ContainerFile { member_path, .. },
+        ) => Some(member_path.clone()),
         _ => node
             .path
             .strip_prefix(&root.path)

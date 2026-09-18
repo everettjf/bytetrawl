@@ -414,6 +414,7 @@ fn child_named<'a>(node: &'a ArtifactNode, name: &str) -> Option<&'a ArtifactNod
 fn member_path(node: &ArtifactNode) -> Option<PathBuf> {
     match node.source.as_ref()? {
         ArtifactSource::ArchiveMember { member_path, .. } => Some(member_path.clone()),
+        ArtifactSource::ContainerFile { member_path, .. } => Some(member_path.clone()),
         ArtifactSource::Filesystem { .. } => None,
     }
 }

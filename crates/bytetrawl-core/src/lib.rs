@@ -42,6 +42,21 @@ pub enum FileFormat {
     Image,
     DiskImage,
     Text,
+    Asar,
+    AssetCatalog,
+    Icns,
+    Pak,
+    Wasm,
+    Font,
+    Pdf,
+    Mp4,
+    Mp3,
+    PythonBytecode,
+    Gettext,
+    QtResource,
+    Texture,
+    Metallib,
+    SwiftModule,
     UnknownBinary,
 }
 
@@ -60,6 +75,12 @@ pub enum ArtifactSource {
         crc32: u32,
         is_directory: bool,
     },
+    ContainerFile {
+        container: PathBuf,
+        member_path: PathBuf,
+        offset: u64,
+        size: u64,
+    },
 }
 
 impl ArtifactSource {
@@ -67,6 +88,7 @@ impl ArtifactSource {
         match self {
             Self::Filesystem { path } => path.is_file(),
             Self::ArchiveMember { is_directory, .. } => !is_directory,
+            Self::ContainerFile { .. } => true,
         }
     }
 
@@ -74,6 +96,7 @@ impl ArtifactSource {
         match self {
             Self::Filesystem { path } => path.is_dir(),
             Self::ArchiveMember { is_directory, .. } => *is_directory,
+            Self::ContainerFile { .. } => false,
         }
     }
 }
@@ -132,6 +155,7 @@ impl ArtifactNode {
     pub fn is_file(&self) -> bool {
         match self.source.as_ref() {
             Some(ArtifactSource::ArchiveMember { is_directory, .. }) => !is_directory,
+            Some(ArtifactSource::ContainerFile { .. }) => true,
             Some(ArtifactSource::Filesystem { path }) => !path.is_dir(),
             None => !self.path.is_dir(),
         }
