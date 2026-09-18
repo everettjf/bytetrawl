@@ -254,6 +254,9 @@ pub fn detect_format(bytes: &[u8]) -> FileFormat {
     if bytes.starts_with(b"\xe2\x9c\xa8\x0e") || bytes.starts_with(b"\xe2\x9c\xa8\x07") {
         return FileFormat::SwiftModule;
     }
+    if bytes.starts_with(b"<roblox") {
+        return FileFormat::Roblox;
+    }
     if imagesize::image_type(bytes).is_ok() {
         return FileFormat::Image;
     }
@@ -1777,6 +1780,7 @@ mod tests {
             detect_format(b"\xe2\x9c\xa8\x0erest"),
             FileFormat::SwiftModule
         );
+        assert_eq!(detect_format(b"<roblox!binary"), FileFormat::Roblox);
         assert_eq!(detect_format(b"BZhrest"), FileFormat::Archive);
         assert_eq!(detect_format(b"\xfd7zXZ\0rest"), FileFormat::Archive);
         assert_eq!(detect_format(b"\x28\xb5\x2f\xfdrest"), FileFormat::Archive);

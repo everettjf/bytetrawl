@@ -938,6 +938,15 @@ fn build_file_node(path: &Path) -> Result<ArtifactNode> {
     {
         format = FileFormat::DiskImage;
     }
+    if matches!(format, FileFormat::UnknownBinary)
+        && path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("stl"))
+        && is_binary_stl(path)
+    {
+        format = FileFormat::Mesh;
+    }
     let kind = classify_file(path, format);
     let mut node = ArtifactNode::new(
         path.file_name()
@@ -1046,7 +1055,9 @@ fn classify_file(path: &Path, format: FileFormat) -> ArtifactKind {
         | FileFormat::QtResource
         | FileFormat::Texture
         | FileFormat::Metallib
-        | FileFormat::SwiftModule => ArtifactKind::Resource,
+        | FileFormat::SwiftModule
+        | FileFormat::Mesh
+        | FileFormat::Roblox => ArtifactKind::Resource,
         _ if matches!(ext.as_str(), "pkg" | "mpkg" | "msi" | "deb" | "rpm") => {
             ArtifactKind::Package
         }
@@ -1056,6 +1067,30 @@ fn classify_file(path: &Path, format: FileFormat) -> ArtifactKind {
 
 fn format_is_ar(path: &Path) -> bool {
     read_prefix(path, 8).is_ok_and(|bytes| bytes == b"!<arch>\n")
+}
+
+/// Binary STL files have no magic number; the format is a fixed 80-byte header,
+/// a 32-bit little-endian triangle count, then exactly `50 * count` bytes of
+/// facet records. Validate the count against the file length.
+fn is_binary_stl(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if meta.len() < 84 {
+        return false;
+    }
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    if file.seek(SeekFrom::Start(80)).is_err() {
+        return false;
+    }
+    let mut count = [0u8; 4];
+    if file.read_exact(&mut count).is_err() {
+        return false;
+    }
+    let triangles = u32::from_le_bytes(count) as u64;
+    meta.len() == 84u64.saturating_add(triangles.saturating_mul(50))
 }
 
 fn classify_dependencies(root: &mut ArtifactNode) {
@@ -1403,6 +1438,10 @@ pub fn inspect_metadata(node: &ArtifactNode) -> Result<indexmap::IndexMap<String
         }
         Some(FileFormat::SwiftModule) => {
             inspect_swift_module_metadata(&read_prefix(&node.path, 16)?, &mut metadata)?
+        }
+        Some(FileFormat::Mesh) => inspect_mesh_metadata(&node.path, &mut metadata)?,
+        Some(FileFormat::Roblox) => {
+            inspect_roblox_metadata(&read_prefix(&node.path, 64)?, &mut metadata)?
         }
         _ => {}
     }
@@ -3000,6 +3039,37 @@ fn inspect_swift_module_metadata(
     metadata.insert(
         "Inspection Mode".into(),
         "Compiler artifact identified by magic; internals are not parsed.".into(),
+    );
+    Ok(())
+}
+
+fn inspect_mesh_metadata(
+    path: &Path,
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    let bytes = read_prefix(path, 84)?;
+    if bytes.len() < 84 {
+        return Err(ByteTrawlError::Malformed("truncated STL header".into()));
+    }
+    let triangles = u32::from_le_bytes(bytes[80..84].try_into().unwrap_or([0; 4]));
+    metadata.insert("Mesh Format".into(), "STL (binary)".into());
+    metadata.insert("Triangle Count".into(), triangles.to_string());
+    Ok(())
+}
+
+fn inspect_roblox_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if !bytes.starts_with(b"<roblox") {
+        return Err(ByteTrawlError::Malformed(
+            "unrecognized Roblox model header".into(),
+        ));
+    }
+    metadata.insert("Model Format".into(), "Roblox model (.rbxm/.rbxl)".into());
+    metadata.insert(
+        "Inspection Mode".into(),
+        "Static identification; instance and chunk parsing is not performed.".into(),
     );
     Ok(())
 }
@@ -5056,6 +5126,33 @@ mod tests {
         assert_eq!(
             metadata.get("Sample Rate").map(String::as_str),
             Some("44100 Hz")
+        );
+    }
+
+    #[test]
+    fn identifies_binary_stl_meshes() {
+        // 2 triangles → 84 + 100 bytes.
+        let mut bytes = vec![0u8; 84 + 100];
+        bytes[80..84].copy_from_slice(&2u32.to_le_bytes());
+        let path = std::env::temp_dir().join(format!("bytetrawl-stl-{}.stl", uuid::Uuid::new_v4()));
+        std::fs::write(&path, &bytes).expect("write STL fixture");
+        assert!(is_binary_stl(&path));
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_mesh_metadata(&path, &mut metadata).expect("parse STL");
+        assert_eq!(
+            metadata.get("Triangle Count").map(String::as_str),
+            Some("2")
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn identifies_roblox_models() {
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_roblox_metadata(b"<roblox!binary", &mut metadata).expect("parse Roblox");
+        assert_eq!(
+            metadata.get("Model Format").map(String::as_str),
+            Some("Roblox model (.rbxm/.rbxl)")
         );
     }
 }

@@ -181,6 +181,8 @@ ByteTrawl separates three levels of support: **audit** means platform-aware rele
 | Textures (`.ktx`, `.ktx2`, `.dds`, `.exr`) | Inspect | Container type, dimensions, faces and mipmap levels |
 | Apple Metal library (`.metallib`) | Identify | Container and version recognition; shader bytecode is not disassembled |
 | Swift modules (`.swiftmodule`, `.swiftdoc`) | Identify | Compiler-artifact recognition by magic; internals are not parsed |
+| 3D meshes (`.stl` binary) | Inspect | Triangle count for binary STL; text `.stl`/`.obj` are discovered as text |
+| Roblox models (`.rbxm`, `.rbxl`) | Identify | Roblox model recognition by header |
 | tar, tar.gz and tgz | Inspect | Bounded member table, sizes, modes, links and path hazards without extracting files |
 | ar archives and static libraries | Inspect | Bounded member table and sizes; Debian packages receive the deeper platform audit above |
 | Apple UDIF/DMG | Inspect | Trailer and container metadata, partitions, sectors, compressed blocks and compression ratios; recognized by structure and never mounted |

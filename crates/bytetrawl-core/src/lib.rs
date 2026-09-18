@@ -57,6 +57,8 @@ pub enum FileFormat {
     Texture,
     Metallib,
     SwiftModule,
+    Mesh,
+    Roblox,
     UnknownBinary,
 }
 
