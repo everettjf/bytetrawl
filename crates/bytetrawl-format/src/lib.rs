@@ -101,6 +101,39 @@ fn detect_texture(bytes: &[u8]) -> bool {
         || bytes.starts_with(b"\x76\x2f\x31\x01")
 }
 
+/// Detects a Windows shell link (`.lnk`). The 76-byte header carries a fixed
+/// header-size word followed by the shell-link class identifier.
+fn detect_lnk(bytes: &[u8]) -> bool {
+    bytes.len() >= 20
+        && bytes[0..4] == [0x4c, 0x00, 0x00, 0x00]
+        && bytes[4..20]
+            == [
+                0x01, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x46,
+            ]
+}
+
+/// Distinguishes a Java class file (which shares the `cafebabe` magic with
+/// big-endian FAT Mach-O) by its major class-file version.
+fn detect_java_class(bytes: &[u8]) -> bool {
+    if bytes.len() < 8 || !bytes.starts_with(b"\xca\xfe\xba\xbe") {
+        return false;
+    }
+    let major = u16::from_be_bytes([bytes[6], bytes[7]]);
+    (45..=68).contains(&major)
+}
+
+/// Returns true for ISO Base Media file-type brands that denote HEIC/HEIF still
+/// images rather than video.
+fn is_heic_brand(brand: Option<&[u8]>) -> bool {
+    brand.is_some_and(|brand| {
+        matches!(
+            brand,
+            b"heic" | b"heix" | b"hevc" | b"hevx" | b"mif1" | b"msf1" | b"heim" | b"heis"
+        )
+    })
+}
+
 impl BinaryAnalyzer for PeAnalyzer {
     fn detect(&self, input: &AnalysisInput<'_>) -> bool {
         has_pe_header(input.bytes)
@@ -178,12 +211,18 @@ pub fn detect_format(bytes: &[u8]) -> FileFormat {
         ) {
             return FileFormat::MachO;
         }
+        // `cafebabe` is shared by Java class files and big-endian FAT Mach-O.
+        // Disambiguate by the Java class major version.
+        if magic == [0xca, 0xfe, 0xba, 0xbe] {
+            return if detect_java_class(bytes) {
+                FileFormat::JavaClass
+            } else {
+                FileFormat::FatMachO
+            };
+        }
         if matches!(
             magic,
-            [0xca, 0xfe, 0xba, 0xbe]
-                | [0xbe, 0xba, 0xfe, 0xca]
-                | [0xca, 0xfe, 0xba, 0xbf]
-                | [0xbf, 0xba, 0xfe, 0xca]
+            [0xbe, 0xba, 0xfe, 0xca] | [0xca, 0xfe, 0xba, 0xbf] | [0xbf, 0xba, 0xfe, 0xca]
         ) {
             return FileFormat::FatMachO;
         }
@@ -230,8 +269,27 @@ pub fn detect_format(bytes: &[u8]) -> FileFormat {
     if bytes.starts_with(b"%PDF-") {
         return FileFormat::Pdf;
     }
+    if bytes.starts_with(b"fLaC") {
+        return FileFormat::Flac;
+    }
+    if bytes.starts_with(b"OggS") {
+        return FileFormat::Ogg;
+    }
+    if detect_lnk(bytes) {
+        return FileFormat::Lnk;
+    }
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
+        return FileFormat::Wav;
+    }
     if bytes.get(4..8) == Some(b"ftyp") {
-        return FileFormat::Mp4;
+        return if is_heic_brand(bytes.get(8..12)) {
+            FileFormat::Heic
+        } else {
+            FileFormat::Mp4
+        };
+    }
+    if bytes.starts_with(b"\x1a\x45\xdf\xa3") {
+        return FileFormat::Mkv;
     }
     if detect_mp3(bytes) {
         return FileFormat::Mp3;
@@ -1784,5 +1842,38 @@ mod tests {
         assert_eq!(detect_format(b"BZhrest"), FileFormat::Archive);
         assert_eq!(detect_format(b"\xfd7zXZ\0rest"), FileFormat::Archive);
         assert_eq!(detect_format(b"\x28\xb5\x2f\xfdrest"), FileFormat::Archive);
+    }
+
+    #[test]
+    fn detects_p0_audio_codec_and_container_formats() {
+        assert_eq!(detect_format(b"fLaC\x00\x00\x00\x22rest"), FileFormat::Flac);
+        assert_eq!(detect_format(b"OggS\x00\x02rest"), FileFormat::Ogg);
+        assert_eq!(
+            detect_format(b"\xca\xfe\xba\xbe\x00\x00\x00\x34"),
+            FileFormat::JavaClass
+        );
+        assert_eq!(
+            detect_format(b"RIFF\x24\x00\x00\x00WAVEfmt "),
+            FileFormat::Wav
+        );
+        assert_eq!(detect_format(b"\x1a\x45\xdf\xa3rest"), FileFormat::Mkv);
+
+        let mut heic = vec![0u8; 16];
+        heic[4..8].copy_from_slice(b"ftyp");
+        heic[8..12].copy_from_slice(b"heic");
+        assert_eq!(detect_format(&heic), FileFormat::Heic);
+
+        let mut mp4 = vec![0u8; 16];
+        mp4[4..8].copy_from_slice(b"ftyp");
+        mp4[8..12].copy_from_slice(b"isom");
+        assert_eq!(detect_format(&mp4), FileFormat::Mp4);
+
+        let mut lnk = vec![0u8; 76];
+        lnk[0..4].copy_from_slice(&0x4cu32.to_le_bytes());
+        lnk[4..20].copy_from_slice(&[
+            0x01, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x46,
+        ]);
+        assert_eq!(detect_format(&lnk), FileFormat::Lnk);
     }
 }

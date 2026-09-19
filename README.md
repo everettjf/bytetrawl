@@ -170,7 +170,14 @@ ByteTrawl separates three levels of support: **audit** means platform-aware rele
 | Apple Compiled Asset Catalog (`.car`) | Inspect | BOM header metadata (version, block count, block table); named section keys such as CARHEADER, RENDITIONS, FACETKEYS and KEYFORMAT; renditions are not extracted |
 | Apple ICNS icons | Inspect | Declared size and a bounded chunk table listing icon types and byte sizes |
 | Chromium Data Pack (`.pak`) | Inspect | Version, text encoding, resource/alias counts and a bounded resource identifier index |
-| WebAssembly (`.wasm`) | Identify | Magic and version recognition with the universal search, strings, hash, entropy and Hex workflows |
+| WebAssembly (`.wasm`) | Inspect | Version, section table, import/export/function counts and exported names |
+| Windows shell links (`.lnk`) | Inspect | Link flags, file attributes, file size, icon index, show command and FILETIME timestamps |
+| WAV (`.wav`) | Inspect | Codec, channels, sample rate, bits per sample and duration |
+| FLAC (`.flac`) | Inspect | Sample rate, channels, bits per sample, total samples and duration |
+| Ogg (`.ogg`, `.opus`) | Inspect | Codec (Vorbis/Opus/FLAC), sample rate and channel count |
+| Java class files (`.class`) | Inspect | Class-file version, Java version, constant-pool count, modifiers, this/super class and field/method counts |
+| HEIC / HEIF (`.heic`, `.heif`) | Inspect | Major/compatible brands and image dimensions |
+| Matroska / WebM (`.mkv`, `.webm`) | Inspect | Doc type, timecode scale and duration |
 | Fonts (`.ttf`, `.otf`, `.woff`, `.woff2`) | Inspect | SFNT flavor, table count, family/subfamily/full/PostScript names, units-per-em, glyph count and weight class; WOFF/WOFF2 container metadata without decompression |
 | PDF (`.pdf`) | Inspect | Version, page count, title/author/creator/producer metadata and encryption indicator without rendering |
 | MP4 / M4A (`.mp4`, `.m4a`) | Inspect | Major and compatible brands, movie timescale and duration |

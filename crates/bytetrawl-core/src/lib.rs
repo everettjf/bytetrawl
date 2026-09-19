@@ -59,6 +59,13 @@ pub enum FileFormat {
     SwiftModule,
     Mesh,
     Roblox,
+    Lnk,
+    Wav,
+    Flac,
+    Ogg,
+    JavaClass,
+    Heic,
+    Mkv,
     UnknownBinary,
 }
 

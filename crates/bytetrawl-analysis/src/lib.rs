@@ -513,6 +513,8 @@ fn archive_member_kind(name: &str, is_directory: bool) -> ArtifactKind {
         "ttf" | "otf" | "woff" | "woff2" | "pdf" | "mp4" | "m4a" | "mov" | "mp3" | "pyc" | "mo"
         | "qm" | "rcc" | "ktx" | "ktx2" | "dds" | "exr" | "stl" | "obj" | "metallib"
         | "swiftmodule" | "swiftdoc" => ArtifactKind::Resource,
+        "lnk" | "wav" | "flac" | "ogg" | "opus" | "class" | "heic" | "heif" | "avif" | "mkv"
+        | "webm" => ArtifactKind::Resource,
         _ => ArtifactKind::Unknown,
     }
 }
@@ -1057,7 +1059,14 @@ fn classify_file(path: &Path, format: FileFormat) -> ArtifactKind {
         | FileFormat::Metallib
         | FileFormat::SwiftModule
         | FileFormat::Mesh
-        | FileFormat::Roblox => ArtifactKind::Resource,
+        | FileFormat::Roblox
+        | FileFormat::Lnk
+        | FileFormat::Wav
+        | FileFormat::Flac
+        | FileFormat::Ogg
+        | FileFormat::JavaClass
+        | FileFormat::Heic
+        | FileFormat::Mkv => ArtifactKind::Resource,
         _ if matches!(ext.as_str(), "pkg" | "mpkg" | "msi" | "deb" | "rpm") => {
             ArtifactKind::Package
         }
@@ -1409,7 +1418,7 @@ pub fn inspect_metadata(node: &ArtifactNode) -> Result<indexmap::IndexMap<String
             inspect_pak_metadata(&read_prefix(&node.path, 64 * 1024 * 1024)?, &mut metadata)?
         }
         Some(FileFormat::Wasm) => {
-            inspect_wasm_metadata(&read_prefix(&node.path, 16)?, &mut metadata)?
+            inspect_wasm_metadata(&read_prefix(&node.path, 64 * 1024 * 1024)?, &mut metadata)?
         }
         Some(FileFormat::Font) => {
             inspect_font_metadata(&read_prefix(&node.path, 16 * 1024 * 1024)?, &mut metadata)?
@@ -1442,6 +1451,27 @@ pub fn inspect_metadata(node: &ArtifactNode) -> Result<indexmap::IndexMap<String
         Some(FileFormat::Mesh) => inspect_mesh_metadata(&node.path, &mut metadata)?,
         Some(FileFormat::Roblox) => {
             inspect_roblox_metadata(&read_prefix(&node.path, 64)?, &mut metadata)?
+        }
+        Some(FileFormat::Lnk) => {
+            inspect_lnk_metadata(&read_prefix(&node.path, 4096)?, &mut metadata)?
+        }
+        Some(FileFormat::Wav) => {
+            inspect_wav_metadata(&read_prefix(&node.path, 16 * 1024 * 1024)?, &mut metadata)?
+        }
+        Some(FileFormat::Flac) => {
+            inspect_flac_metadata(&read_prefix(&node.path, 16 * 1024 * 1024)?, &mut metadata)?
+        }
+        Some(FileFormat::Ogg) => {
+            inspect_ogg_metadata(&read_prefix(&node.path, 16 * 1024 * 1024)?, &mut metadata)?
+        }
+        Some(FileFormat::JavaClass) => {
+            inspect_java_class_metadata(&read_prefix(&node.path, 64 * 1024 * 1024)?, &mut metadata)?
+        }
+        Some(FileFormat::Heic) => {
+            inspect_heic_metadata(&read_prefix(&node.path, 64 * 1024 * 1024)?, &mut metadata)?
+        }
+        Some(FileFormat::Mkv) => {
+            inspect_mkv_metadata(&read_prefix(&node.path, 64 * 1024 * 1024)?, &mut metadata)?
         }
         _ => {}
     }
@@ -2408,6 +2438,71 @@ fn inspect_wasm_metadata(
     let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
     metadata.insert("Binary Format".into(), "WebAssembly".into());
     metadata.insert("Version".into(), version.to_string());
+
+    let mut position = 8usize;
+    let mut sections = Vec::new();
+    let mut import_count = 0u32;
+    let mut export_count = 0u32;
+    let mut function_count = 0u32;
+    let mut exports = Vec::new();
+    while position < bytes.len() {
+        let Some(section_id) = bytes.get(position).copied() else {
+            break;
+        };
+        position += 1;
+        let Some((size, content_start)) = read_leb128_at(bytes, position) else {
+            break;
+        };
+        position = content_start;
+        let section_end = position.saturating_add(size as usize).min(bytes.len());
+        sections.push(format!(
+            "{} ({} bytes)",
+            wasm_section_name(section_id),
+            size
+        ));
+        match section_id {
+            2 => {
+                if let Some((count, _)) = read_leb128_at(bytes, position) {
+                    import_count = count;
+                }
+            }
+            3 => {
+                if let Some((count, _)) = read_leb128_at(bytes, position) {
+                    function_count = count;
+                }
+            }
+            7 => {
+                if let Some((count, mut cursor)) = read_leb128_at(bytes, position) {
+                    export_count = count;
+                    for _ in 0..count.min(500) {
+                        let Some((name, next)) = read_wasm_name(bytes, cursor) else {
+                            break;
+                        };
+                        // kind byte, then an LEB-encoded index
+                        let Some(kind_end) = next.checked_add(1) else {
+                            break;
+                        };
+                        let Some((_index, index_end)) = read_leb128_at(bytes, kind_end) else {
+                            break;
+                        };
+                        cursor = index_end;
+                        exports.push(name);
+                    }
+                }
+            }
+            _ => {}
+        }
+        position = section_end;
+    }
+    if !sections.is_empty() {
+        metadata.insert("Sections".into(), sections.join(", "));
+    }
+    metadata.insert("Import Count".into(), import_count.to_string());
+    metadata.insert("Export Count".into(), export_count.to_string());
+    metadata.insert("Function Count".into(), function_count.to_string());
+    if !exports.is_empty() {
+        metadata.insert("Exports".into(), exports.join(", "));
+    }
     Ok(())
 }
 
@@ -3072,6 +3167,565 @@ fn inspect_roblox_metadata(
         "Static identification; instance and chunk parsing is not performed.".into(),
     );
     Ok(())
+}
+
+fn inspect_lnk_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 76 {
+        return Err(ByteTrawlError::Malformed("truncated .lnk header".into()));
+    }
+    metadata.insert("File Format".into(), "Windows Shell Link (.lnk)".into());
+    let flags = u32::from_le_bytes(bytes[20..24].try_into().unwrap_or([0; 4]));
+    metadata.insert("Link Flags".into(), format!("0x{flags:08x}"));
+    let mut decoded = Vec::new();
+    for (bit, name) in [
+        (0x0000_0001, "HasTargetIDList"),
+        (0x0000_0002, "HasLinkInfo"),
+        (0x0000_0004, "HasName"),
+        (0x0000_0008, "HasRelativePath"),
+        (0x0000_0010, "HasWorkingDir"),
+        (0x0000_0020, "HasArguments"),
+        (0x0000_0040, "HasIconLocation"),
+        (0x0000_0080, "IsUnicode"),
+        (0x0000_0100, "ForceNoLinkInfo"),
+        (0x0000_1000, "HasDarwinID"),
+        (0x0000_2000, "RunAsUser"),
+        (0x0000_4000, "HasExpIcon"),
+        (0x0000_8000, "NoPidlAlias"),
+    ] {
+        if flags & bit != 0 {
+            decoded.push(name);
+        }
+    }
+    if !decoded.is_empty() {
+        metadata.insert("Link Flags Decoded".into(), decoded.join(", "));
+    }
+    let attributes = u32::from_le_bytes(bytes[24..28].try_into().unwrap_or([0; 4]));
+    metadata.insert("File Attributes".into(), format!("0x{attributes:08x}"));
+    let file_size = u32::from_le_bytes(bytes[52..56].try_into().unwrap_or([0; 4]));
+    metadata.insert("File Size".into(), file_size.to_string());
+    let icon_index = u32::from_le_bytes(bytes[56..60].try_into().unwrap_or([0; 4]));
+    metadata.insert("Icon Index".into(), icon_index.to_string());
+    let show_command = u32::from_le_bytes(bytes[60..64].try_into().unwrap_or([0; 4]));
+    metadata.insert("Show Command".into(), show_command.to_string());
+    for (offset, label) in [
+        (28, "Creation Time"),
+        (36, "Access Time"),
+        (44, "Write Time"),
+    ] {
+        let ticks = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap_or([0; 8]));
+        if ticks != 0 {
+            metadata.insert(label.into(), filetime_to_string(ticks));
+        }
+    }
+    Ok(())
+}
+
+fn filetime_to_string(ticks: u64) -> String {
+    let seconds = (ticks / 10_000_000).saturating_sub(11_644_473_600);
+    DateTime::<Utc>::from_timestamp(seconds as i64, 0)
+        .map(|time| time.to_rfc3339())
+        .unwrap_or_else(|| ticks.to_string())
+}
+
+fn inspect_wav_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 44 || !bytes.starts_with(b"RIFF") || bytes.get(8..12) != Some(b"WAVE") {
+        return Err(ByteTrawlError::Malformed("truncated WAV header".into()));
+    }
+    metadata.insert("Audio Format".into(), "RIFF WAVE".into());
+    let mut byte_rate = 0u32;
+    let mut data_size = 0u64;
+    let mut offset = 12usize;
+    while offset + 8 <= bytes.len() {
+        let chunk_id = &bytes[offset..offset + 4];
+        let size = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        match chunk_id {
+            b"fmt " if offset + 24 <= bytes.len() => {
+                let format = u16::from_le_bytes(bytes[offset + 8..offset + 10].try_into().unwrap());
+                let channels =
+                    u16::from_le_bytes(bytes[offset + 10..offset + 12].try_into().unwrap());
+                let sample_rate =
+                    u32::from_le_bytes(bytes[offset + 12..offset + 16].try_into().unwrap());
+                byte_rate = u32::from_le_bytes(bytes[offset + 16..offset + 20].try_into().unwrap());
+                let bits = u16::from_le_bytes(bytes[offset + 22..offset + 24].try_into().unwrap());
+                metadata.insert("Codec".into(), wav_format_name(format));
+                metadata.insert("Channels".into(), channels.to_string());
+                metadata.insert("Sample Rate".into(), sample_rate.to_string());
+                metadata.insert("Bits Per Sample".into(), bits.to_string());
+            }
+            b"data" => {
+                data_size = size as u64;
+                metadata.insert("Data Size".into(), size.to_string());
+            }
+            _ => {}
+        }
+        offset = offset
+            .saturating_add(8)
+            .saturating_add(size)
+            .saturating_add(size & 1);
+    }
+    if byte_rate > 0 && data_size > 0 {
+        metadata.insert(
+            "Duration".into(),
+            format!("{:.2} s", data_size as f64 / byte_rate as f64),
+        );
+    }
+    Ok(())
+}
+
+fn wav_format_name(format: u16) -> String {
+    match format {
+        1 => "PCM".into(),
+        3 => "IEEE Float".into(),
+        6 => "A-law".into(),
+        7 => "µ-law".into(),
+        0xfffe => "Extensible".into(),
+        other => format!("Codec {other}"),
+    }
+}
+
+fn inspect_flac_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 42 || !bytes.starts_with(b"fLaC") {
+        return Err(ByteTrawlError::Malformed("truncated FLAC header".into()));
+    }
+    metadata.insert("Audio Format".into(), "FLAC".into());
+    let mut offset = 4usize;
+    while offset + 4 <= bytes.len() {
+        let header = bytes[offset];
+        let block_type = header & 0x7f;
+        let is_last = header & 0x80 != 0;
+        let length = ((bytes[offset + 1] as usize) << 16)
+            | ((bytes[offset + 2] as usize) << 8)
+            | bytes[offset + 3] as usize;
+        offset += 4;
+        if block_type == 0 && offset + 34 <= bytes.len() {
+            let field = u64::from_be_bytes(bytes[offset + 10..offset + 18].try_into().unwrap());
+            let sample_rate = (field >> 44) as u32;
+            let channels = ((field >> 41) & 0x7) as u16 + 1;
+            let bits = ((field >> 36) & 0x1f) as u16 + 1;
+            let total_samples = field & 0x0f_ffff_ffff;
+            metadata.insert("Sample Rate".into(), sample_rate.to_string());
+            metadata.insert("Channels".into(), channels.to_string());
+            metadata.insert("Bits Per Sample".into(), bits.to_string());
+            metadata.insert("Total Samples".into(), total_samples.to_string());
+            if sample_rate > 0 {
+                metadata.insert(
+                    "Duration".into(),
+                    format!("{:.2} s", total_samples as f64 / sample_rate as f64),
+                );
+            }
+        }
+        offset = offset.saturating_add(length);
+        if is_last {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn inspect_ogg_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 27 || !bytes.starts_with(b"OggS") {
+        return Err(ByteTrawlError::Malformed("truncated Ogg header".into()));
+    }
+    metadata.insert("Container Format".into(), "Ogg".into());
+    metadata.insert("Version".into(), bytes[4].to_string());
+    if let Some(position) = find_bytes(bytes, b"\x01vorbis") {
+        metadata.insert("Codec".into(), "Vorbis".into());
+        if position + 16 <= bytes.len() {
+            let sample_rate =
+                u32::from_le_bytes(bytes[position + 12..position + 16].try_into().unwrap());
+            let channels = bytes[position + 11];
+            metadata.insert("Sample Rate".into(), sample_rate.to_string());
+            metadata.insert("Channels".into(), channels.to_string());
+        }
+    } else if let Some(position) = find_bytes(bytes, b"OpusHead") {
+        metadata.insert("Codec".into(), "Opus".into());
+        if position + 16 <= bytes.len() {
+            let sample_rate =
+                u32::from_le_bytes(bytes[position + 12..position + 16].try_into().unwrap());
+            let channels = bytes[position + 9];
+            metadata.insert("Sample Rate".into(), sample_rate.to_string());
+            metadata.insert("Channels".into(), channels.to_string());
+        }
+    } else if find_bytes(bytes, b"\x7fFLAC").is_some() {
+        metadata.insert("Codec".into(), "FLAC (in Ogg)".into());
+    } else {
+        metadata.insert("Codec".into(), "Unknown".into());
+    }
+    Ok(())
+}
+
+fn inspect_java_class_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 10 || !bytes.starts_with(b"\xca\xfe\xba\xbe") {
+        return Err(ByteTrawlError::Malformed(
+            "truncated Java class file".into(),
+        ));
+    }
+    metadata.insert("Binary Format".into(), "Java class".into());
+    let minor = u16::from_be_bytes(bytes[4..6].try_into().unwrap());
+    let major = u16::from_be_bytes(bytes[6..8].try_into().unwrap());
+    metadata.insert("Class File Version".into(), format!("{major}.{minor}"));
+    metadata.insert("Java Version".into(), java_version_name(major));
+    let constant_pool_count = u16::from_be_bytes(bytes[8..10].try_into().unwrap()) as usize;
+    metadata.insert(
+        "Constant Pool Count".into(),
+        constant_pool_count.to_string(),
+    );
+
+    let mut utf8 = vec![None; constant_pool_count];
+    let mut class_name_index = vec![None; constant_pool_count];
+    let mut position = 10usize;
+    for index in 1..constant_pool_count {
+        if position >= bytes.len() {
+            break;
+        }
+        let tag = bytes[position];
+        position += 1;
+        match tag {
+            1 => {
+                if position + 2 > bytes.len() {
+                    break;
+                }
+                let length =
+                    u16::from_be_bytes(bytes[position..position + 2].try_into().unwrap()) as usize;
+                position += 2;
+                if position + length > bytes.len() {
+                    break;
+                }
+                utf8[index] =
+                    Some(String::from_utf8_lossy(&bytes[position..position + length]).into_owned());
+                position += length;
+            }
+            7 => {
+                if position + 2 > bytes.len() {
+                    break;
+                }
+                class_name_index[index] = Some(u16::from_be_bytes(
+                    bytes[position..position + 2].try_into().unwrap(),
+                ));
+                position += 2;
+            }
+            8 | 16 | 19 | 20 => position += 2,
+            15 => position += 3,
+            3 | 4 => position += 4,
+            5 | 6 => position += 8,
+            9 | 10 | 11 | 12 | 17 | 18 => position += 4,
+            _ => break,
+        }
+    }
+    if position + 8 > bytes.len() {
+        return Ok(());
+    }
+    let access = u16::from_be_bytes(bytes[position..position + 2].try_into().unwrap());
+    metadata.insert("Access Flags".into(), format!("0x{access:04x}"));
+    metadata.insert("Modifiers".into(), java_access_flags(access));
+    let this_class = u16::from_be_bytes(bytes[position + 2..position + 4].try_into().unwrap());
+    let super_class = u16::from_be_bytes(bytes[position + 4..position + 6].try_into().unwrap());
+    let interfaces_count =
+        u16::from_be_bytes(bytes[position + 6..position + 8].try_into().unwrap());
+    metadata.insert("Interface Count".into(), interfaces_count.to_string());
+    if let Some(name) = resolve_java_class(this_class, &class_name_index, &utf8) {
+        metadata.insert("This Class".into(), name);
+    }
+    if let Some(name) = resolve_java_class(super_class, &class_name_index, &utf8) {
+        metadata.insert("Super Class".into(), name);
+    }
+    let members_position = position + 8 + interfaces_count as usize * 2;
+    if members_position + 4 <= bytes.len() {
+        let fields = u16::from_be_bytes(
+            bytes[members_position..members_position + 2]
+                .try_into()
+                .unwrap(),
+        );
+        let methods = u16::from_be_bytes(
+            bytes[members_position + 2..members_position + 4]
+                .try_into()
+                .unwrap(),
+        );
+        metadata.insert("Field Count".into(), fields.to_string());
+        metadata.insert("Method Count".into(), methods.to_string());
+    }
+    Ok(())
+}
+
+fn java_version_name(major: u16) -> String {
+    match major {
+        45 => "Java 1.1".into(),
+        46 => "Java 1.2".into(),
+        47 => "Java 1.3".into(),
+        48 => "Java 1.4".into(),
+        49 => "Java 5".into(),
+        50 => "Java 6".into(),
+        51 => "Java 7".into(),
+        52 => "Java 8".into(),
+        53 => "Java 9".into(),
+        54 => "Java 10".into(),
+        55 => "Java 11".into(),
+        56 => "Java 12".into(),
+        57 => "Java 13".into(),
+        58 => "Java 14".into(),
+        59 => "Java 15".into(),
+        60 => "Java 16".into(),
+        61 => "Java 17".into(),
+        62 => "Java 18".into(),
+        63 => "Java 19".into(),
+        64 => "Java 20".into(),
+        65 => "Java 21".into(),
+        66 => "Java 22".into(),
+        67 => "Java 23".into(),
+        other => format!("class version {other}"),
+    }
+}
+
+fn java_access_flags(access: u16) -> String {
+    let mut flags = Vec::new();
+    for (bit, name) in [
+        (0x0001, "public"),
+        (0x0010, "final"),
+        (0x0020, "super"),
+        (0x0200, "interface"),
+        (0x0400, "abstract"),
+        (0x1000, "synthetic"),
+        (0x2000, "annotation"),
+        (0x4000, "enum"),
+        (0x8000, "module"),
+    ] {
+        if access & bit != 0 {
+            flags.push(name);
+        }
+    }
+    if flags.is_empty() {
+        "package-private".into()
+    } else {
+        flags.join(" ")
+    }
+}
+
+fn resolve_java_class(
+    index: u16,
+    class_name_index: &[Option<u16>],
+    utf8: &[Option<String>],
+) -> Option<String> {
+    let name_index = (*class_name_index.get(index as usize)?)?;
+    utf8.get(name_index as usize).cloned().flatten()
+}
+
+fn inspect_heic_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 16 || bytes.get(4..8) != Some(b"ftyp") {
+        return Err(ByteTrawlError::Malformed("truncated HEIC header".into()));
+    }
+    metadata.insert("Image Format".into(), "HEIC / HEIF (ISO Base Media)".into());
+    metadata.insert(
+        "Major Brand".into(),
+        String::from_utf8_lossy(&bytes[8..12]).into_owned(),
+    );
+    let mut brands = Vec::new();
+    let mut cursor = 16usize;
+    while cursor + 4 <= bytes.len() && brands.len() < 32 {
+        let brand = &bytes[cursor..cursor + 4];
+        if !brand
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b' ')
+        {
+            break;
+        }
+        brands.push(String::from_utf8_lossy(brand).into_owned());
+        cursor += 4;
+    }
+    if !brands.is_empty() {
+        metadata.insert("Compatible Brands".into(), brands.join(", "));
+    }
+    if let Some(position) = find_bytes(bytes, b"ispe")
+        && position + 16 <= bytes.len()
+    {
+        let width = u32::from_be_bytes(bytes[position + 8..position + 12].try_into().unwrap());
+        let height = u32::from_be_bytes(bytes[position + 12..position + 16].try_into().unwrap());
+        metadata.insert("Width".into(), width.to_string());
+        metadata.insert("Height".into(), height.to_string());
+    }
+    Ok(())
+}
+
+fn inspect_mkv_metadata(
+    bytes: &[u8],
+    metadata: &mut indexmap::IndexMap<String, String>,
+) -> Result<()> {
+    if bytes.len() < 8 || !bytes.starts_with(b"\x1a\x45\xdf\xa3") {
+        return Err(ByteTrawlError::Malformed("truncated EBML header".into()));
+    }
+    metadata.insert("Container Format".into(), "Matroska / WebM (EBML)".into());
+    let head = &bytes[..bytes.len().min(4096)];
+    let doc_type = if find_bytes(head, b"webm").is_some() {
+        "webm"
+    } else if find_bytes(head, b"matroska").is_some() {
+        "matroska"
+    } else {
+        "unknown"
+    };
+    metadata.insert("Doc Type".into(), doc_type.into());
+    if let Some((timescale, duration)) = ebml_duration(bytes) {
+        metadata.insert("Timecode Scale".into(), timescale.to_string());
+        metadata.insert(
+            "Duration".into(),
+            format!("{:.3} s", duration * timescale as f64 / 1_000_000_000.0),
+        );
+    }
+    Ok(())
+}
+
+fn ebml_id_length(first: u8) -> Option<usize> {
+    (1..=4).find(|&length| first & (0x80 >> (length - 1)) != 0)
+}
+
+fn ebml_size_length(first: u8) -> Option<usize> {
+    (1..=8).find(|&length| first & (0x80 >> (length - 1)) != 0)
+}
+
+fn read_ebml_id(bytes: &[u8], position: &mut usize) -> Option<u64> {
+    let first = *bytes.get(*position)?;
+    let length = ebml_id_length(first)?;
+    if *position + length > bytes.len() {
+        return None;
+    }
+    let mut id = 0u64;
+    for byte in &bytes[*position..*position + length] {
+        id = (id << 8) | *byte as u64;
+    }
+    *position += length;
+    Some(id)
+}
+
+fn read_ebml_size(bytes: &[u8], position: &mut usize) -> Option<u64> {
+    let first = *bytes.get(*position)?;
+    let length = ebml_size_length(first)?;
+    if *position + length > bytes.len() {
+        return None;
+    }
+    let mut value = (first & (0x7f >> (length - 1))) as u64;
+    for byte in &bytes[*position + 1..*position + length] {
+        value = (value << 8) | *byte as u64;
+    }
+    *position += length;
+    Some(value)
+}
+
+fn ebml_duration(bytes: &[u8]) -> Option<(u64, f64)> {
+    let mut position = 0usize;
+    let mut segment_start = None;
+    let mut segment_end = None;
+    while position < bytes.len() {
+        let id = read_ebml_id(bytes, &mut position)?;
+        let size = read_ebml_size(bytes, &mut position)?;
+        if id == 0x1853_8067 {
+            segment_start = Some(position);
+            segment_end = Some(position.saturating_add(size as usize));
+            break;
+        }
+        position = position.saturating_add(size as usize);
+    }
+    let mut position = segment_start?;
+    let end = segment_end?;
+    while position < end.min(bytes.len()) {
+        let id = read_ebml_id(bytes, &mut position)?;
+        let size = read_ebml_size(bytes, &mut position)?;
+        if id == 0x1549_a966 {
+            let info_end = position.saturating_add(size as usize);
+            let mut cursor = position;
+            let mut timescale = None;
+            let mut duration = None;
+            while cursor < info_end.min(bytes.len()) {
+                let info_id = read_ebml_id(bytes, &mut cursor)?;
+                let info_size = read_ebml_size(bytes, &mut cursor)?;
+                match info_id {
+                    0x2a_d7_b1 => {
+                        let mut value = 0u64;
+                        for byte in &bytes[cursor..cursor + info_size.min(8) as usize] {
+                            value = (value << 8) | *byte as u64;
+                        }
+                        timescale = Some(value);
+                    }
+                    0x4489 if info_size >= 8 => {
+                        duration = Some(f64::from_be_bytes(
+                            bytes[cursor..cursor + 8].try_into().ok()?,
+                        ));
+                    }
+                    _ => {}
+                }
+                cursor = cursor.saturating_add(info_size as usize);
+            }
+            return timescale.zip(duration);
+        }
+        position = position.saturating_add(size as usize);
+    }
+    None
+}
+
+fn read_leb128(bytes: &[u8], position: &mut usize) -> Option<u32> {
+    let mut result = 0u32;
+    let mut shift = 0;
+    loop {
+        let byte = *bytes.get(*position)?;
+        *position += 1;
+        result |= ((byte & 0x7f) as u32).checked_shl(shift)?;
+        if byte & 0x80 == 0 {
+            return Some(result);
+        }
+        shift += 7;
+        if shift >= 35 {
+            return None;
+        }
+    }
+}
+
+fn read_leb128_at(bytes: &[u8], position: usize) -> Option<(u32, usize)> {
+    let mut cursor = position;
+    let value = read_leb128(bytes, &mut cursor)?;
+    Some((value, cursor))
+}
+
+fn read_wasm_name(bytes: &[u8], position: usize) -> Option<(String, usize)> {
+    let (length, cursor) = read_leb128_at(bytes, position)?;
+    let end = cursor.checked_add(length as usize)?;
+    let name = std::str::from_utf8(bytes.get(cursor..end)?)
+        .ok()?
+        .to_string();
+    Some((name, end))
+}
+
+fn wasm_section_name(id: u8) -> &'static str {
+    match id {
+        0 => "custom",
+        1 => "type",
+        2 => "import",
+        3 => "function",
+        4 => "table",
+        5 => "memory",
+        6 => "global",
+        7 => "export",
+        8 => "start",
+        9 => "element",
+        10 => "code",
+        11 => "data",
+        12 => "data count",
+        _ => "unknown",
+    }
 }
 
 pub fn inspect_signature(path: &Path) -> Option<SignatureInfo> {
@@ -5154,5 +5808,156 @@ mod tests {
             metadata.get("Model Format").map(String::as_str),
             Some("Roblox model (.rbxm/.rbxl)")
         );
+    }
+
+    #[test]
+    fn parses_wav_header() {
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&36u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&2u16.to_le_bytes()); // channels
+        wav.extend_from_slice(&44_100u32.to_le_bytes()); // sample rate
+        wav.extend_from_slice(&176_400u32.to_le_bytes()); // byte rate
+        wav.extend_from_slice(&4u16.to_le_bytes()); // block align
+        wav.extend_from_slice(&16u16.to_le_bytes()); // bits
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&0u32.to_le_bytes());
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_wav_metadata(&wav, &mut metadata).expect("parse WAV");
+        assert_eq!(metadata.get("Codec").map(String::as_str), Some("PCM"));
+        assert_eq!(metadata.get("Channels").map(String::as_str), Some("2"));
+        assert_eq!(
+            metadata.get("Sample Rate").map(String::as_str),
+            Some("44100")
+        );
+        assert_eq!(
+            metadata.get("Bits Per Sample").map(String::as_str),
+            Some("16")
+        );
+    }
+
+    #[test]
+    fn parses_flac_streaminfo() {
+        let mut flac = b"fLaC".to_vec();
+        flac.push(0x80); // last block, STREAMINFO
+        flac.extend_from_slice(&[0x00, 0x00, 34]); // length 34
+        let mut streaminfo = vec![0u8; 34];
+        let field: u64 = (44_100u64 << 44) | (1u64 << 41) | (15u64 << 36) | 44_100u64;
+        streaminfo[10..18].copy_from_slice(&field.to_be_bytes());
+        flac.extend_from_slice(&streaminfo);
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_flac_metadata(&flac, &mut metadata).expect("parse FLAC");
+        assert_eq!(
+            metadata.get("Sample Rate").map(String::as_str),
+            Some("44100")
+        );
+        assert_eq!(metadata.get("Channels").map(String::as_str), Some("2"));
+        assert_eq!(
+            metadata.get("Bits Per Sample").map(String::as_str),
+            Some("16")
+        );
+        assert_eq!(
+            metadata.get("Total Samples").map(String::as_str),
+            Some("44100")
+        );
+    }
+
+    #[test]
+    fn parses_java_class_file() {
+        let mut class = Vec::new();
+        class.extend_from_slice(b"\xca\xfe\xba\xbe");
+        class.extend_from_slice(&0u16.to_be_bytes()); // minor
+        class.extend_from_slice(&52u16.to_be_bytes()); // major (Java 8)
+        class.extend_from_slice(&3u16.to_be_bytes()); // constant_pool_count
+        // entry 1: Utf8 "Hello"
+        class.push(1);
+        class.extend_from_slice(&5u16.to_be_bytes());
+        class.extend_from_slice(b"Hello");
+        // entry 2: Class -> name_index 1
+        class.push(7);
+        class.extend_from_slice(&1u16.to_be_bytes());
+        class.extend_from_slice(&0x0021u16.to_be_bytes()); // access: public super
+        class.extend_from_slice(&2u16.to_be_bytes()); // this_class = 2
+        class.extend_from_slice(&0u16.to_be_bytes()); // super_class = 0
+        class.extend_from_slice(&0u16.to_be_bytes()); // interfaces
+        class.extend_from_slice(&0u16.to_be_bytes()); // fields
+        class.extend_from_slice(&0u16.to_be_bytes()); // methods
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_java_class_metadata(&class, &mut metadata).expect("parse class");
+        assert_eq!(
+            metadata.get("Java Version").map(String::as_str),
+            Some("Java 8")
+        );
+        assert_eq!(
+            metadata.get("This Class").map(String::as_str),
+            Some("Hello")
+        );
+        assert_eq!(metadata.get("Field Count").map(String::as_str), Some("0"));
+        assert_eq!(metadata.get("Method Count").map(String::as_str), Some("0"));
+    }
+
+    #[test]
+    fn parses_wasm_sections_and_exports() {
+        let mut wasm = b"\0asm\x01\x00\x00\x00".to_vec();
+        wasm.extend_from_slice(&[1, 1, 0]); // type section: count 0
+        let name = b"tree_sitter_css";
+        let mut export_content = Vec::new();
+        export_content.push(1); // count
+        export_content.push(name.len() as u8);
+        export_content.extend_from_slice(name);
+        export_content.extend_from_slice(&[0, 0]); // kind func, index 0
+        wasm.push(7);
+        wasm.push(export_content.len() as u8);
+        wasm.extend_from_slice(&export_content);
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_wasm_metadata(&wasm, &mut metadata).expect("parse wasm");
+        assert_eq!(metadata.get("Export Count").map(String::as_str), Some("1"));
+        assert_eq!(
+            metadata.get("Exports").map(String::as_str),
+            Some("tree_sitter_css")
+        );
+        assert!(metadata["Sections"].contains("type"));
+        assert!(metadata["Sections"].contains("export"));
+    }
+
+    #[test]
+    fn parses_windows_shell_link_header() {
+        let mut lnk = vec![0u8; 76];
+        lnk[0..4].copy_from_slice(&0x4cu32.to_le_bytes());
+        lnk[4..20].copy_from_slice(&[
+            0x01, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x46,
+        ]);
+        lnk[20..24].copy_from_slice(&0x0fu32.to_le_bytes()); // HasTargetIDList|LinkInfo|Name|RelativePath
+        lnk[52..56].copy_from_slice(&1234u32.to_le_bytes());
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_lnk_metadata(&lnk, &mut metadata).expect("parse lnk");
+        assert_eq!(metadata.get("File Size").map(String::as_str), Some("1234"));
+        assert!(metadata["Link Flags Decoded"].contains("HasName"));
+        assert!(metadata["Link Flags Decoded"].contains("HasRelativePath"));
+    }
+
+    #[test]
+    fn parses_heic_dimensions() {
+        let mut heic = vec![0u8; 64];
+        heic[4..8].copy_from_slice(b"ftyp");
+        heic[8..12].copy_from_slice(b"heic");
+        let ispe_position = 24usize;
+        heic[ispe_position..ispe_position + 4].copy_from_slice(b"ispe");
+        heic[ispe_position + 4..ispe_position + 8].copy_from_slice(&[0; 4]); // version/flags
+        heic[ispe_position + 8..ispe_position + 12].copy_from_slice(&1920u32.to_be_bytes());
+        heic[ispe_position + 12..ispe_position + 16].copy_from_slice(&1080u32.to_be_bytes());
+        let mut metadata = indexmap::IndexMap::new();
+        inspect_heic_metadata(&heic, &mut metadata).expect("parse heic");
+        assert_eq!(
+            metadata.get("Major Brand").map(String::as_str),
+            Some("heic")
+        );
+        assert_eq!(metadata.get("Width").map(String::as_str), Some("1920"));
+        assert_eq!(metadata.get("Height").map(String::as_str), Some("1080"));
     }
 }
