@@ -41,7 +41,7 @@
         <p class="lede">A native workbench for safe static triage, release comparison, and platform-aware auditing across applications, packages, archives, disk images, and binaries.</p>
         <div class="actions">
           <a class="button primary" href="#install">Download ByteTrawl</a>
-          <a class="button" href="https://github.com/everettjf/bytetrawl/releases/tag/v1.1.16">View v1.1.16 ↗</a>
+          <a class="button" href="https://github.com/everettjf/bytetrawl/releases/latest">Latest release ↗</a>
         </div>
         <p class="micro">macOS Apple silicon · Windows x64 · Linux amd64 · Apache-2.0</p>
       </div>
@@ -147,20 +147,20 @@
     </section>
 
     <section class="section install shell" id="install">
-      <div class="install-copy"><p class="eyebrow">GET BYTE TRAWL · v1.1.16</p><h2>Choose your<br>platform.</h2><p>Install the native workbench or use a portable archive. Windows and Linux packages are built and verified by GitHub Actions.</p></div>
+      <div class="install-copy"><p class="eyebrow">GET BYTE TRAWL</p><h2>Choose your<br>platform.</h2><p>Install the native workbench or use a portable archive. Windows and Linux packages are built and verified by GitHub Actions.</p></div>
       <div class="downloads" aria-label="ByteTrawl downloads">
         <article class="download-platform">
           <div><span>WINDOWS · X64</span><h3>Windows</h3><p>Use the installer for a standard setup, or unzip the portable build and run it directly.</p></div>
           <div class="download-actions">
-            <a class="button primary" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.16/ByteTrawl-1.1.16-windows-x64.msi">Download MSI</a>
-            <a class="button" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.16/ByteTrawl-1.1.16-windows-x64.zip">Portable ZIP</a>
+            <a class="button primary" href="https://github.com/everettjf/bytetrawl/releases/latest" data-release-asset="-windows-x64.msi">Download MSI</a>
+            <a class="button" href="https://github.com/everettjf/bytetrawl/releases/latest" data-release-asset="-windows-x64.zip">Portable ZIP</a>
           </div>
         </article>
         <article class="download-platform">
           <div><span>LINUX · AMD64</span><h3>Linux</h3><p>Install the Debian package, or extract the portable tarball on another compatible distribution.</p></div>
           <div class="download-actions">
-            <a class="button primary" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.16/ByteTrawl-1.1.16-linux-amd64.deb">Download DEB</a>
-            <a class="button" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.16/ByteTrawl-1.1.16-linux-amd64.tar.gz">Portable tar.gz</a>
+            <a class="button primary" href="https://github.com/everettjf/bytetrawl/releases/latest" data-release-asset="-linux-amd64.deb">Download DEB</a>
+            <a class="button" href="https://github.com/everettjf/bytetrawl/releases/latest" data-release-asset="-linux-amd64.tar.gz">Portable tar.gz</a>
           </div>
         </article>
         <div class="terminal">
@@ -172,13 +172,34 @@
           <div class="terminal-head"><span>Optional · Command-line tool</span><button type="button" data-copy aria-label="Copy CLI installation command">Copy</button></div>
           <pre><code><span>$</span> brew install everettjf/tap/bytetrawl-cli</code></pre>
         </div>
-        <p class="checksum-link"><a href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.16/SHA256SUMS">Verify downloads with SHA256SUMS ↗</a></p>
+        <p class="checksum-link"><a href="https://github.com/everettjf/bytetrawl/releases/latest/download/SHA256SUMS">Verify downloads with SHA256SUMS ↗</a></p>
       </div>
     </section>
   </main>
 
   <footer class="shell"><a class="brand" href="#top"><img class="brand-icon" src="assets/icons/apple-touch-icon.png" alt=""><span>ByteTrawl</span></a><p>Static inspection only. Indicators are not malware verdicts.</p><p>© 2026 ByteTrawl · Apache-2.0</p></footer>
   <script>
+    // Keep the release page as a working fallback when the API is unavailable.
+    async function loadLatestDownloads() {
+      try {
+        const response = await fetch('https://api.github.com/repos/everettjf/bytetrawl/releases/latest');
+        if (!response.ok) return;
+        const release = await response.json();
+        if (!Array.isArray(release.assets)) return;
+        document.querySelectorAll('[data-release-asset]').forEach((link) => {
+          const asset = release.assets.find((asset) =>
+            typeof asset.name === 'string' && asset.name.endsWith(link.dataset.releaseAsset));
+          if (asset && typeof asset.browser_download_url === 'string' &&
+              asset.browser_download_url.startsWith('https://github.com/everettjf/bytetrawl/releases/download/')) {
+            link.href = asset.browser_download_url;
+          }
+        });
+      } catch {
+        // The links still open GitHub's latest release page without JavaScript or network access to the API.
+      }
+    }
+    loadLatestDownloads();
+
     document.querySelectorAll('[data-copy]').forEach((button) => {
       button.addEventListener('click', async () => {
         const command = button.closest('.terminal').querySelector('code').textContent.replace(/^\$\s*/, '').trim();
