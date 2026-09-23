@@ -846,7 +846,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "bytetrawl"
-version = "1.1.15"
+version = "1.1.16"
 dependencies = [
  "anyhow",
  "bytetrawl-analysis",
@@ -870,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "bytetrawl-analysis"
-version = "1.1.15"
+version = "1.1.16"
 dependencies = [
  "apple-xar",
  "bytetrawl-core",
@@ -892,6 +892,7 @@ dependencies = [
  "sha1",
  "sha2 0.10.9",
  "tar",
+ "tempfile",
  "udif",
  "uuid",
  "walkdir",
@@ -900,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "bytetrawl-android"
-version = "1.1.15"
+version = "1.1.16"
 dependencies = [
  "bytetrawl-analysis",
  "bytetrawl-core",
@@ -913,7 +914,7 @@ dependencies = [
 
 [[package]]
 name = "bytetrawl-cli"
-version = "1.1.15"
+version = "1.1.16"
 dependencies = [
  "bytetrawl-analysis",
  "bytetrawl-android",
@@ -935,7 +936,7 @@ dependencies = [
 
 [[package]]
 name = "bytetrawl-compare"
-version = "1.1.15"
+version = "1.1.16"
 dependencies = [
  "bytetrawl-analysis",
  "bytetrawl-core",
@@ -949,7 +950,7 @@ dependencies = [
 
 [[package]]
 name = "bytetrawl-core"
-version = "1.1.15"
+version = "1.1.16"
 dependencies = [
  "chrono",
  "indexmap",
@@ -961,7 +962,7 @@ dependencies = [
 
 [[package]]
 name = "bytetrawl-format"
-version = "1.1.15"
+version = "1.1.16"
 dependencies = [
  "authenticode",
  "bytetrawl-core",
@@ -976,7 +977,7 @@ dependencies = [
 
 [[package]]
 name = "bytetrawl-ios"
-version = "1.1.15"
+version = "1.1.16"
 dependencies = [
  "bytetrawl-analysis",
  "bytetrawl-core",
@@ -994,7 +995,7 @@ dependencies = [
 
 [[package]]
 name = "bytetrawl-linux"
-version = "1.1.15"
+version = "1.1.16"
 dependencies = [
  "bytetrawl-core",
  "flate2",
@@ -1008,7 +1009,7 @@ dependencies = [
 
 [[package]]
 name = "bytetrawl-policy"
-version = "1.1.15"
+version = "1.1.16"
 dependencies = [
  "bytetrawl-android",
  "bytetrawl-compare",
@@ -1024,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "bytetrawl-signature"
-version = "1.1.15"
+version = "1.1.16"
 dependencies = [
  "bytetrawl-core",
  "indexmap",
@@ -1033,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "bytetrawl-tools"
-version = "1.1.15"
+version = "1.1.16"
 dependencies = [
  "bytetrawl-core",
  "wait-timeout",
@@ -1041,7 +1042,7 @@ dependencies = [
 
 [[package]]
 name = "bytetrawl-windows"
-version = "1.1.15"
+version = "1.1.16"
 dependencies = [
  "bytetrawl-analysis",
  "bytetrawl-core",

@@ -8,6 +8,7 @@ command on every push and pull request, then builds and launches a real macOS ap
 | Artifact model and workspace persistence | Unit tests and backward-compatible serialization |
 | PE, Mach-O, Universal Mach-O, ELF | Magic, headers, malformed offsets, target-specific fixtures |
 | Archives and untrusted input | Traversal, symlinks, depth/size/ratio limits, CRC corruption, cancellation |
+| Performance regressions | Single-pass ZIP hashing, chunk cancellation, bounded UTF-16 runs, source-aware cache invalidation, wide directory trees, string filter invalidation |
 | IPA | Identity, targets, architectures, privacy, provisioning, findings, 20-case IPAView matrix |
 | Android APK | Text/binary manifest, permissions, components, DEX, resources, native code, signing |
 | APPX/MSIX | Manifest, identity, applications, capabilities, signature and block-map indicators |

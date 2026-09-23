@@ -238,16 +238,7 @@ fn file_snapshots(
         };
         let reader = ArtifactReader::open(node)?;
         let mut hasher = Sha256::new();
-        let mut offset = 0u64;
-        while offset < reader.len() {
-            cancel.check()?;
-            let bytes = reader.read_range_cancellable(offset, 1024 * 1024, cancel)?;
-            if bytes.is_empty() {
-                break;
-            }
-            hasher.update(&bytes);
-            offset = offset.saturating_add(bytes.len() as u64);
-        }
+        reader.visit_chunks(cancel, |bytes| hasher.update(bytes))?;
         snapshots.insert(
             path,
             FileSnapshot {

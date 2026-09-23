@@ -5,6 +5,7 @@ use bytetrawl::report_export::{
     ReportBlock, ReportDocument, ReportSection, render_markdown as render_analysis_markdown,
     render_pdf as render_analysis_pdf,
 };
+use bytetrawl::string_filter::StringFilter;
 use bytetrawl_analysis::{
     AnalysisCache, ArtifactReader, CancellationToken, ExtractedString, HashOptions, HexReader,
     SearchHit, analyze_node, annotate_string_locations, apply_signature_analysis,
@@ -324,6 +325,7 @@ struct ByteTrawlApp {
     strings: Arc<Vec<ExtractedString>>,
     strings_loaded: bool,
     string_minimum: usize,
+    string_filter: std::cell::RefCell<Option<StringFilter>>,
     search_hits: Arc<Vec<SearchHit>>,
     dependency_graph: Arc<DependencyGraph>,
     dependency_graph_loaded: bool,
@@ -403,6 +405,7 @@ impl ByteTrawlApp {
             strings: Arc::default(),
             strings_loaded: false,
             string_minimum: 4,
+            string_filter: std::cell::RefCell::new(None),
             search_hits: Arc::default(),
             dependency_graph: Arc::default(),
             dependency_graph_loaded: false,
@@ -726,6 +729,7 @@ impl ByteTrawlApp {
                         this.container_signature = None;
                         this.signature_loaded = false;
                         this.strings = Arc::default();
+                        *this.string_filter.get_mut() = None;
                         this.strings_loaded = false;
                         this.dependency_graph = Arc::default();
                         this.dependency_graph_loaded = false;
@@ -794,6 +798,7 @@ impl ByteTrawlApp {
         self.container_signature = None;
         self.signature_loaded = false;
         self.strings = Arc::default();
+        *self.string_filter.get_mut() = None;
         self.strings_loaded = false;
         self.entropy_profile = Arc::default();
         self.entropy_loaded = false;
@@ -818,7 +823,7 @@ impl ByteTrawlApp {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let cached = cache.get(&node.path);
+                    let cached = cache.get_node(&node);
                     let mut analysis = if let Some(cached) = &cached {
                         cached.analysis.clone()
                     } else {
@@ -842,7 +847,7 @@ impl ByteTrawlApp {
                         }
                     };
                     summary.analysis = analysis.clone();
-                    let _ = cache.insert(&node.path, summary.clone());
+                    let _ = cache.insert_node(&node, summary.clone());
                     Ok::<_, bytetrawl_core::ByteTrawlError>((analysis, summary, metadata))
                 })
                 .await;
@@ -1277,7 +1282,7 @@ impl ByteTrawlApp {
                     if let Some(analysis) = &mut summary.analysis {
                         enrich_analysis_entropy(&node.path, analysis, &cancellation)?;
                     }
-                    let _ = cache.insert(&node.path, summary.clone());
+                    let _ = cache.insert_node(&node, summary.clone());
                     Ok::<_, bytetrawl_core::ByteTrawlError>(summary)
                 })
                 .await;
@@ -2804,23 +2809,25 @@ impl ByteTrawlApp {
     }
     fn render_strings(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let query = self.query.to_lowercase();
-        let rows = self
-            .strings
-            .iter()
-            .filter(|s| {
-                s.value.chars().count() >= self.string_minimum
-                    && (query.is_empty() || s.value.to_lowercase().contains(&query))
-            })
-            .map(|s| {
-                vec![
-                    fmt_addr(s.offset),
-                    s.virtual_address.map(fmt_addr).unwrap_or_default(),
-                    s.section.clone().unwrap_or_default(),
-                    format!("{:?}", s.encoding),
-                    s.value.clone(),
-                ]
-            })
-            .collect();
+        let mut filter = self.string_filter.borrow_mut();
+        if !filter
+            .as_ref()
+            .is_some_and(|filter| filter.matches(&self.strings, &query, self.string_minimum))
+        {
+            *filter = Some(StringFilter::new(
+                self.strings.clone(),
+                query,
+                self.string_minimum,
+            ));
+        }
+        let indices = filter
+            .as_ref()
+            .expect("string filter initialized")
+            .indices
+            .clone();
+        let strings = self.strings.clone();
+        let row_count = indices.len();
+        drop(filter);
         div()
             .flex()
             .flex_col()
@@ -2854,7 +2861,7 @@ impl ByteTrawlApp {
                             })),
                     ),
             )
-            .child(table_panel(
+            .child(lazy_table_panel(
                 "Extracted Strings",
                 &[
                     "File offset",
@@ -2863,7 +2870,17 @@ impl ByteTrawlApp {
                     "Encoding",
                     "Value",
                 ],
-                rows,
+                row_count,
+                move |index| {
+                    let s = &strings[indices[index]];
+                    vec![
+                        fmt_addr(s.offset),
+                        s.virtual_address.map(fmt_addr).unwrap_or_default(),
+                        s.section.clone().unwrap_or_default(),
+                        format!("{:?}", s.encoding),
+                        s.value.clone(),
+                    ]
+                },
                 cx,
             ))
     }
@@ -5390,12 +5407,26 @@ fn table_panel(
     headers: &'static [&'static str],
     rows: Vec<Vec<String>>,
     cx: &mut Context<ByteTrawlApp>,
-) -> impl IntoElement {
+) -> AnyElement {
+    lazy_table_panel(
+        title,
+        headers,
+        rows.len(),
+        move |index| rows[index].clone(),
+        cx,
+    )
+}
+
+fn lazy_table_panel(
+    title: &'static str,
+    headers: &'static [&'static str],
+    total: usize,
+    row_at: impl Fn(usize) -> Vec<String> + 'static,
+    cx: &mut Context<ByteTrawlApp>,
+) -> AnyElement {
     const MAX_RENDERED_ROWS: usize = 20_000;
-    let total = rows.len();
     let truncated = total > MAX_RENDERED_ROWS;
     let visible_count = total.min(MAX_RENDERED_ROWS);
-    let list_rows = Arc::new(rows);
     div()
         .flex_1()
         .min_h(px(160.))
@@ -5446,14 +5477,14 @@ fn table_panel(
                         visible_count,
                         cx.processor(move |_this, range: std::ops::Range<usize>, _, _| {
                             range
-                                .filter_map(|index| list_rows.get(index))
-                                .map(|row| {
+                                .map(|index| {
+                                    let row = row_at(index);
                                     div()
                                         .h(px(32.))
                                         .flex()
                                         .border_t_1()
                                         .border_color(rgb(BORDER))
-                                        .children(row.iter().cloned().map(|value| {
+                                        .children(row.into_iter().map(|value| {
                                             div()
                                                 .flex_1()
                                                 .min_w_0()
@@ -5473,6 +5504,7 @@ fn table_panel(
                     .min_h(px(96.)),
                 ),
         )
+        .into_any_element()
 }
 fn symbol_table(
     title: &'static str,

@@ -100,6 +100,117 @@ impl ArtifactReader {
         self.read_range(0, self.length as usize)
     }
 
+    /// Visit the complete source in order, keeping a single decompressor open.
+    /// ZIP members are checked against their declared length and CRC, including
+    /// empty members. Consumers must discard partial results on error.
+    pub fn visit_chunks(
+        &self,
+        cancel: &CancellationToken,
+        mut visit: impl FnMut(&[u8]),
+    ) -> Result<()> {
+        cancel.check()?;
+        let stream = |reader: &mut dyn Read,
+                      path: &Path,
+                      expected_crc: Option<u32>,
+                      visit: &mut dyn FnMut(&[u8])|
+         -> Result<()> {
+            let mut buffer = vec![0; 1024 * 1024];
+            let mut remaining = self.length;
+            let mut crc = crc32fast::Hasher::new();
+            while remaining > 0 {
+                cancel.check()?;
+                let requested = remaining.min(buffer.len() as u64) as usize;
+                let count =
+                    reader
+                        .read(&mut buffer[..requested])
+                        .map_err(|source| ByteTrawlError::Io {
+                            path: path.into(),
+                            source,
+                        })?;
+                if count == 0 {
+                    return Err(ByteTrawlError::Malformed(
+                        "artifact source ended early".into(),
+                    ));
+                }
+                if expected_crc.is_some() {
+                    crc.update(&buffer[..count]);
+                }
+                visit(&buffer[..count]);
+                remaining -= count as u64;
+            }
+            cancel.check()?;
+            if let Some(expected) = expected_crc {
+                let count = reader
+                    .read(&mut buffer[..1])
+                    .map_err(|source| ByteTrawlError::Io {
+                        path: path.into(),
+                        source,
+                    })?;
+                if count != 0 || crc.finalize() != expected {
+                    return Err(ByteTrawlError::Malformed(
+                        "archive member length or CRC32 does not match".into(),
+                    ));
+                }
+            }
+            cancel.check()
+        };
+        match &self.source {
+            ArtifactSource::Filesystem { path } => {
+                let mut file = File::open(path).map_err(|source| ByteTrawlError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+                stream(&mut file, path, None, &mut visit)
+            }
+            ArtifactSource::ContainerFile {
+                container, offset, ..
+            } => {
+                let mut file = File::open(container).map_err(|source| ByteTrawlError::Io {
+                    path: container.clone(),
+                    source,
+                })?;
+                file.seek(SeekFrom::Start(*offset))
+                    .map_err(|source| ByteTrawlError::Io {
+                        path: container.clone(),
+                        source,
+                    })?;
+                stream(&mut file, container, None, &mut visit)
+            }
+            ArtifactSource::ArchiveMember {
+                container,
+                member_path,
+                entry_index,
+                crc32,
+                is_directory,
+                ..
+            } => {
+                if *is_directory {
+                    return Err(ByteTrawlError::Malformed(
+                        "cannot read an archive directory".into(),
+                    ));
+                }
+                let file = File::open(container).map_err(|source| ByteTrawlError::Io {
+                    path: container.clone(),
+                    source,
+                })?;
+                let mut archive = zip::ZipArchive::new(file)
+                    .map_err(|error| ByteTrawlError::Malformed(format!("ZIP: {error}")))?;
+                let mut entry = archive
+                    .by_index(*entry_index)
+                    .map_err(|error| ByteTrawlError::Malformed(format!("ZIP entry: {error}")))?;
+                if entry.enclosed_name().as_deref() != Some(member_path.as_path())
+                    || entry.size() != self.length
+                    || entry.crc32() != *crc32
+                {
+                    return Err(ByteTrawlError::Malformed(
+                        "archive member identity changed".into(),
+                    ));
+                }
+                stream(&mut entry, container, Some(*crc32), &mut visit)
+            }
+        }
+    }
+
     pub fn read_range(&self, offset: u64, length: usize) -> Result<Vec<u8>> {
         self.read_range_cancellable(offset, length, &CancellationToken::default())
     }
@@ -797,6 +908,7 @@ fn discover_directory(path: &Path, cancel: &CancellationToken) -> Result<Artifac
     let root_kind = classify_directory(path);
     let mut root = ArtifactNode::new(name, path.to_path_buf(), root_kind);
     let mut count = 0usize;
+    let mut child_indexes = HashMap::new();
     for entry in WalkDir::new(path)
         .min_depth(1)
         .max_depth(MAX_DEPTH)
@@ -818,7 +930,7 @@ fn discover_directory(path: &Path, cancel: &CancellationToken) -> Result<Artifac
             .path()
             .strip_prefix(path)
             .map_err(|e| ByteTrawlError::Malformed(e.to_string()))?;
-        insert_path(&mut root, relative, entry.path())?;
+        insert_path(&mut root, relative, entry.path(), &mut child_indexes)?;
     }
     classify_dependencies(&mut root);
     if root.kind == ArtifactKind::Directory
@@ -890,13 +1002,19 @@ fn logicalize_artifact_tree(root: &mut ArtifactNode) {
     root.children = logical;
 }
 
-fn insert_path(root: &mut ArtifactNode, relative: &Path, absolute: &Path) -> Result<()> {
+fn insert_path(
+    root: &mut ArtifactNode,
+    relative: &Path,
+    absolute: &Path,
+    child_indexes: &mut HashMap<(uuid::Uuid, String), usize>,
+) -> Result<()> {
     let mut current = root;
     let parts: Vec<_> = relative.components().collect();
     for (i, part) in parts.iter().enumerate() {
         let name = part.as_os_str().to_string_lossy().to_string();
         let is_last = i + 1 == parts.len();
-        if let Some(index) = current.children.iter().position(|n| n.name == name) {
+        let key = (current.id, name.clone());
+        if let Some(&index) = child_indexes.get(&key) {
             current = &mut current.children[index];
             continue;
         }
@@ -913,6 +1031,7 @@ fn insert_path(root: &mut ArtifactNode, relative: &Path, absolute: &Path) -> Res
         };
         current.children.push(node);
         let index = current.children.len() - 1;
+        child_indexes.insert(key, index);
         current = &mut current.children[index];
     }
     Ok(())
@@ -4132,26 +4251,21 @@ pub fn hash_node(
     let mut h5 = Md5::new();
     let mut counts = [0u64; 256];
     let mut offset = 0u64;
-    while offset < reader.len() {
-        cancel.check()?;
-        let bytes = reader.read_range_cancellable(offset, 1024 * 1024, cancel)?;
-        if bytes.is_empty() {
-            break;
-        }
-        for byte in &bytes {
+    reader.visit_chunks(cancel, |bytes| {
+        for byte in bytes {
             counts[*byte as usize] += 1;
         }
         if options.sha256 {
-            h256.update(&bytes);
+            h256.update(bytes);
         }
         if options.sha1 {
-            h1.update(&bytes);
+            h1.update(bytes);
         }
         if options.md5 {
-            h5.update(&bytes);
+            h5.update(bytes);
         }
-        offset = offset.saturating_add(bytes.len() as u64);
-    }
+        offset += bytes.len() as u64;
+    })?;
     let entropy = if offset == 0 {
         0.0
     } else {
@@ -4275,6 +4389,11 @@ fn extract_strings_inner(
             let begin = i;
             let mut units = Vec::new();
             while i + 1 < bytes.len() {
+                if i & 0xffff == 0
+                    && let Some(cancel) = cancel
+                {
+                    cancel.check()?;
+                }
                 let u = match endian {
                     StringEncoding::Utf16Le => u16::from_le_bytes([bytes[i], bytes[i + 1]]),
                     _ => u16::from_be_bytes([bytes[i], bytes[i + 1]]),
@@ -4282,7 +4401,10 @@ fn extract_strings_inner(
                 if !(0x20..=0x7e).contains(&u) {
                     break;
                 }
-                units.push(u);
+                // Retain a bounded preview, but consume the entire run once.
+                if units.len() < 16 * 1024 {
+                    units.push(u);
+                }
                 i += 2;
             }
             if units.len() >= min
@@ -4296,7 +4418,7 @@ fn extract_strings_inner(
                     virtual_address: None,
                 });
             }
-            i = begin.saturating_add(2);
+            i = i.saturating_add(2);
         }
     }
     out.sort_by_key(|s| s.offset);
@@ -4515,7 +4637,7 @@ fn global_search_impl(
         if hits.len() >= limit {
             break;
         }
-        let cached = cache.and_then(|cache| cache.get(&node.path));
+        let cached = cache.and_then(|cache| cache.get_node(node));
         let parsed = cached
             .as_ref()
             .and_then(|summary| summary.analysis.clone())
@@ -4526,8 +4648,8 @@ fn global_search_impl(
             if cached.is_none()
                 && let Some(cache) = cache
             {
-                let _ = cache.insert(
-                    &node.path,
+                let _ = cache.insert_node(
+                    node,
                     FileSummary {
                         size: node.size,
                         sha256: None,
@@ -4665,6 +4787,7 @@ impl HexReader {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CacheKey {
     path: PathBuf,
+    source: ArtifactSource,
     size: u64,
     modified: Option<SystemTime>,
 }
@@ -4674,10 +4797,38 @@ impl AnalysisCache {
     fn key(path: &Path) -> std::io::Result<CacheKey> {
         let m = std::fs::metadata(path)?;
         Ok(CacheKey {
+            source: ArtifactSource::Filesystem { path: path.into() },
             path: path.into(),
             size: m.len(),
             modified: m.modified().ok(),
         })
+    }
+    fn node_key(node: &ArtifactNode) -> std::io::Result<CacheKey> {
+        match &node.source {
+            Some(
+                source @ (ArtifactSource::ArchiveMember { container, .. }
+                | ArtifactSource::ContainerFile { container, .. }),
+            ) => {
+                let mut key = Self::key(container)?;
+                key.path = node.path.clone();
+                key.source = source.clone();
+                Ok(key)
+            }
+            Some(ArtifactSource::Filesystem { path }) => Self::key(path),
+            None => Self::key(&node.path),
+        }
+    }
+    pub fn get_node(&self, node: &ArtifactNode) -> Option<Arc<FileSummary>> {
+        Self::node_key(node)
+            .ok()
+            .and_then(|key| self.0.read().get(&key).cloned())
+    }
+    pub fn insert_node(
+        &self,
+        node: &ArtifactNode,
+        value: FileSummary,
+    ) -> std::io::Result<Arc<FileSummary>> {
+        self.insert_key(Self::node_key(node)?, value)
     }
     pub fn get(&self, path: &Path) -> Option<Arc<FileSummary>> {
         Self::key(path)
@@ -4685,7 +4836,9 @@ impl AnalysisCache {
             .and_then(|k| self.0.read().get(&k).cloned())
     }
     pub fn insert(&self, path: &Path, value: FileSummary) -> std::io::Result<Arc<FileSummary>> {
-        let key = Self::key(path)?;
+        self.insert_key(Self::key(path)?, value)
+    }
+    fn insert_key(&self, key: CacheKey, value: FileSummary) -> std::io::Result<Arc<FileSummary>> {
         let value = Arc::new(value);
         let mut cache = self.0.write();
         cache.retain(|existing, _| existing.path != key.path);
@@ -4703,7 +4856,7 @@ impl AnalysisCache {
         artifact
             .files()
             .filter_map(|node| {
-                self.get(&node.path).map(|summary| {
+                self.get_node(node).map(|summary| {
                     (
                         node.path.display().to_string(),
                         AnalysisSnapshot {
@@ -5961,3 +6114,6 @@ mod tests {
         assert_eq!(metadata.get("Height").map(String::as_str), Some("1080"));
     }
 }
+
+#[cfg(test)]
+mod performance_regressions;
