@@ -18,9 +18,13 @@ The live [ByteTrawl gallery](https://xnu.app/bytetrawl/#gallery) rotates through
 ## Install with Homebrew
 
 ```sh
-brew tap everettjf/tap
-brew install --cask bytetrawl
-brew install bytetrawl-cli
+brew install --cask everettjf/tap/bytetrawl
+```
+
+Optional command-line tool:
+
+```sh
+brew install everettjf/tap/bytetrawl-cli
 ```
 
 Verify the CLI installation:

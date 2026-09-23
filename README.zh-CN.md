@@ -20,9 +20,13 @@ ByteTrawl 是一个使用 Rust 编写的跨平台软件制品安全静态分诊�
 ## 安装
 
 ```sh
-brew tap everettjf/tap
-brew install --cask bytetrawl
-brew install bytetrawl-cli
+brew install --cask everettjf/tap/bytetrawl
+```
+
+可选：安装命令行工具：
+
+```sh
+brew install everettjf/tap/bytetrawl-cli
 ```
 
 ```sh

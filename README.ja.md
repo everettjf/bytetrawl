@@ -20,9 +20,13 @@ ByteTrawl は Rust で実装された、クロスプラットフォームのソ�
 ## Homebrew でインストール
 
 ```sh
-brew tap everettjf/tap
-brew install --cask bytetrawl
-brew install bytetrawl-cli
+brew install --cask everettjf/tap/bytetrawl
+```
+
+コマンドラインツール（任意）：
+
+```sh
+brew install everettjf/tap/bytetrawl-cli
 ```
 
 macOS アプリは Developer ID で署名され、Apple の公証とチケットの stapling が完了しています。リリース成果物は厳格な署名検証、公証チケット検証、Gatekeeper 評価を通過します。

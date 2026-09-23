@@ -20,9 +20,13 @@ A [galeria interativa](https://xnu.app/bytetrawl/#gallery) alterna entre estrutu
 ## Instalação com Homebrew
 
 ```sh
-brew tap everettjf/tap
-brew install --cask bytetrawl
-brew install bytetrawl-cli
+brew install --cask everettjf/tap/bytetrawl
+```
+
+Ferramenta de linha de comando opcional:
+
+```sh
+brew install everettjf/tap/bytetrawl-cli
 ```
 
 O aplicativo macOS é assinado com Developer ID, notarizado pela Apple e distribuído com o ticket anexado. Cada release passa por verificação estrita da assinatura, validação do ticket e avaliação do Gatekeeper.

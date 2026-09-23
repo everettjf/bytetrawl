@@ -41,7 +41,7 @@
         <p class="lede">A native workbench for safe static triage, release comparison, and platform-aware auditing across applications, packages, archives, disk images, and binaries.</p>
         <div class="actions">
           <a class="button primary" href="#install">Download ByteTrawl</a>
-          <a class="button" href="https://github.com/everettjf/bytetrawl/releases/tag/v1.1.12">View v1.1.12 ↗</a>
+          <a class="button" href="https://github.com/everettjf/bytetrawl/releases/tag/v1.1.16">View v1.1.16 ↗</a>
         </div>
         <p class="micro">macOS Apple silicon · Windows x64 · Linux amd64 · Apache-2.0</p>
       </div>
@@ -147,41 +147,45 @@
     </section>
 
     <section class="section install shell" id="install">
-      <div class="install-copy"><p class="eyebrow">GET BYTE TRAWL · v1.1.12</p><h2>Choose your<br>platform.</h2><p>Install the native workbench or use a portable archive. Windows and Linux packages are built and verified by GitHub Actions.</p></div>
+      <div class="install-copy"><p class="eyebrow">GET BYTE TRAWL · v1.1.16</p><h2>Choose your<br>platform.</h2><p>Install the native workbench or use a portable archive. Windows and Linux packages are built and verified by GitHub Actions.</p></div>
       <div class="downloads" aria-label="ByteTrawl downloads">
         <article class="download-platform">
           <div><span>WINDOWS · X64</span><h3>Windows</h3><p>Use the installer for a standard setup, or unzip the portable build and run it directly.</p></div>
           <div class="download-actions">
-            <a class="button primary" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.12/ByteTrawl-1.1.12-windows-x64.msi">Download MSI</a>
-            <a class="button" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.12/ByteTrawl-1.1.12-windows-x64.zip">Portable ZIP</a>
+            <a class="button primary" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.16/ByteTrawl-1.1.16-windows-x64.msi">Download MSI</a>
+            <a class="button" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.16/ByteTrawl-1.1.16-windows-x64.zip">Portable ZIP</a>
           </div>
         </article>
         <article class="download-platform">
           <div><span>LINUX · AMD64</span><h3>Linux</h3><p>Install the Debian package, or extract the portable tarball on another compatible distribution.</p></div>
           <div class="download-actions">
-            <a class="button primary" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.12/ByteTrawl-1.1.12-linux-amd64.deb">Download DEB</a>
-            <a class="button" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.12/ByteTrawl-1.1.12-linux-amd64.tar.gz">Portable tar.gz</a>
+            <a class="button primary" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.16/ByteTrawl-1.1.16-linux-amd64.deb">Download DEB</a>
+            <a class="button" href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.16/ByteTrawl-1.1.16-linux-amd64.tar.gz">Portable tar.gz</a>
           </div>
         </article>
         <div class="terminal">
-          <div class="terminal-head"><span>macOS · Apple silicon · 13+</span><button type="button" data-copy aria-label="Copy installation commands">Copy</button></div>
-          <pre><code><span>$</span> brew tap everettjf/tap
-<span>$</span> brew install --cask bytetrawl
-<span>$</span> brew install bytetrawl-cli</code></pre>
+          <div class="terminal-head"><span>macOS · Apple silicon · 13+</span><button type="button" data-copy aria-label="Copy macOS app installation command">Copy</button></div>
+          <pre><code><span>$</span> brew install --cask everettjf/tap/bytetrawl</code></pre>
           <p><b>Verified:</b> Distributed releases are Developer ID signed, Apple-notarized, and include a stapled ticket for offline Gatekeeper verification.</p>
         </div>
-        <p class="checksum-link"><a href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.12/SHA256SUMS">Verify downloads with SHA256SUMS ↗</a></p>
+        <div class="terminal">
+          <div class="terminal-head"><span>Optional · Command-line tool</span><button type="button" data-copy aria-label="Copy CLI installation command">Copy</button></div>
+          <pre><code><span>$</span> brew install everettjf/tap/bytetrawl-cli</code></pre>
+        </div>
+        <p class="checksum-link"><a href="https://github.com/everettjf/bytetrawl/releases/download/v1.1.16/SHA256SUMS">Verify downloads with SHA256SUMS ↗</a></p>
       </div>
     </section>
   </main>
 
   <footer class="shell"><a class="brand" href="#top"><img class="brand-icon" src="assets/icons/apple-touch-icon.png" alt=""><span>ByteTrawl</span></a><p>Static inspection only. Indicators are not malware verdicts.</p><p>© 2026 ByteTrawl · Apache-2.0</p></footer>
   <script>
-    const button = document.querySelector('[data-copy]');
-    button.addEventListener('click', async () => {
-      await navigator.clipboard.writeText('brew tap everettjf/tap\nbrew install --cask bytetrawl\nbrew install bytetrawl-cli');
-      button.textContent = 'Copied';
-      setTimeout(() => button.textContent = 'Copy', 1600);
+    document.querySelectorAll('[data-copy]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const command = button.closest('.terminal').querySelector('code').textContent.replace(/^\$\s*/, '').trim();
+        await navigator.clipboard.writeText(command);
+        button.textContent = 'Copied';
+        setTimeout(() => button.textContent = 'Copy', 1600);
+      });
     });
 
     const carousel = document.querySelector('.carousel');
